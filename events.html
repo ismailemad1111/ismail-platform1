@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#17191D" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="description" content="منصة أ/ إسماعيل عماد التعليمية — الأحداث والألعاب التفاعلية" />
+
+  <title>الأحداث والألعاب — منصة أ/ إسماعيل عماد</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Reem+Kufi:wght@500;700&family=Inter:wght@500;700;800&display=swap"
+    rel="stylesheet"
+  />
+
+  <!-- Project Styles -->
+  <link rel="stylesheet" href="css/tokens.css" />
+  <link rel="stylesheet" href="css/icons.css" />
+  <link rel="stylesheet" href="css/base.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/layout.css" />
+  <link rel="stylesheet" href="css/screens.css" />
+  <link rel="stylesheet" href="css/editorial-redesign.css" />
+  <link rel="stylesheet" href="css/events.css" />
+  <link rel="stylesheet" href="css/mascot.css" />
+  <link rel="stylesheet" href="css/barai.css" />
+</head>
+
+<body>
+  <div class="ev-page">
+
+    <header class="ev-header">
+      <div class="ev-header-inner">
+        <div class="ev-header-text">
+          <h1 class="ev-title">الأحداث والألعاب</h1>
+          <p class="ev-subtitle">شارك في الأنشطة والألعاب التفاعلية التي يطلقها الأستاذ إسماعيل، وتابع مواعيدها ونتائجك.</p>
+        </div>
+        <div class="ev-header-icon" aria-hidden="true"><span class="icon icon-rocket"></span></div>
+      </div>
+    </header>
+
+    <main class="ev-content">
+
+      <div class="ev-filters" role="tablist" aria-label="تصفية الأحداث" id="evFilters">
+        <button type="button" class="ev-chip is-active" role="tab" aria-selected="true" data-filter="all">الكل<span class="ev-chip-count" id="evCountAll"></span></button>
+        <button type="button" class="ev-chip" role="tab" aria-selected="false" data-filter="live">جارية<span class="ev-chip-count" id="evCountLive"></span></button>
+        <button type="button" class="ev-chip" role="tab" aria-selected="false" data-filter="upcoming">قادمة<span class="ev-chip-count" id="evCountUpcoming"></span></button>
+        <button type="button" class="ev-chip" role="tab" aria-selected="false" data-filter="ended">منتهية<span class="ev-chip-count" id="evCountEnded"></span></button>
+      </div>
+
+      <div class="ev-toolbar">
+        <p class="ev-toolbar-text" id="evCount" aria-live="polite">جارٍ التحميل…</p>
+        <button type="button" class="ev-refresh" id="evRefreshBtn">
+          <span class="icon icon-refresh" aria-hidden="true"></span>
+          <span>تحديث</span>
+        </button>
+      </div>
+
+      <div class="ev-skeleton" id="evSkeleton">
+        <div class="ev-skeleton-card"></div>
+        <div class="ev-skeleton-card"></div>
+        <div class="ev-skeleton-card"></div>
+      </div>
+
+      <div class="ev-grid" id="evGrid" hidden></div>
+
+      <div class="ev-state" id="evEmpty" hidden>
+        <div class="ev-state-icon" aria-hidden="true"><span class="icon icon-rocket"></span></div>
+        <h2 class="ev-state-title" id="evEmptyTitle">لا توجد أحداث الآن</h2>
+        <p class="ev-state-text" id="evEmptyText">سيعلن الأستاذ إسماعيل عن الأحداث والألعاب قريبًا. عد لاحقًا واضغط «تحديث».</p>
+      </div>
+
+      <div class="ev-state" id="evError" hidden>
+        <div class="ev-state-icon" aria-hidden="true"><span class="icon icon-warning"></span></div>
+        <h2 class="ev-state-title">تعذر تحميل الأحداث</h2>
+        <p class="ev-state-text" id="evErrorText">تأكد من اتصالك بالإنترنت وحاول مرة أخرى.</p>
+        <button type="button" class="ev-btn" id="evRetryBtn">حاول مرة أخرى</button>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Bottom Navigation Slot -->
+  <div id="bottomNavSlot"></div>
+
+  <script type="module" src="js/events.js"></script>
+  <script type="module" src="js/barai/index.js"></script>
+</body>
+</html>

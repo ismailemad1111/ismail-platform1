@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#17191D" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="description" content="منصة أ/ إسماعيل عماد التعليمية — تشغيل اللعبة" />
+
+  <title>لعبة تفاعلية — منصة أ/ إسماعيل عماد</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Reem+Kufi:wght@500;700&family=Inter:wght@500;700;800&display=swap"
+    rel="stylesheet"
+  />
+
+  <!-- Project Styles -->
+  <link rel="stylesheet" href="css/tokens.css" />
+  <link rel="stylesheet" href="css/icons.css" />
+  <link rel="stylesheet" href="css/base.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/layout.css" />
+  <link rel="stylesheet" href="css/screens.css" />
+  <link rel="stylesheet" href="css/editorial-redesign.css" />
+  <link rel="stylesheet" href="css/events.css" />
+  <link rel="stylesheet" href="css/mascot.css" />
+  <link rel="stylesheet" href="css/barai.css" />
+</head>
+
+<body>
+  <div class="ev-play-page">
+
+    <header class="ev-play-bar">
+      <a href="events.html" class="ev-back" id="evpBack" aria-label="رجوع"><span class="icon icon-arrow-forward" aria-hidden="true"></span></a>
+      <h1 class="ev-play-name" id="evpName">جارٍ التحميل…</h1>
+      <span class="ev-badge is-live" id="evpBadge" hidden></span>
+    </header>
+
+    <main class="ev-play-stage">
+
+      <div class="ev-state" id="evpLoading">
+        <div class="ev-state-icon" aria-hidden="true"><span class="icon icon-rocket"></span></div>
+        <h2 class="ev-state-title">نجهّز اللعبة…</h2>
+        <p class="ev-state-text">نتأكد من موعد الحدث وملف اللعبة.</p>
+      </div>
+
+      <div class="ev-state" id="evpError" hidden>
+        <div class="ev-state-icon" aria-hidden="true"><span class="icon icon-warning"></span></div>
+        <h2 class="ev-state-title" id="evpErrorTitle">تعذر فتح اللعبة</h2>
+        <p class="ev-state-text" id="evpErrorText"></p>
+        <a class="ev-btn" id="evpErrorBack" href="events.html">العودة</a>
+      </div>
+
+      <div class="ev-frame-wrap" id="evpFrameWrap" hidden></div>
+
+      <div class="ev-play-foot" id="evpFoot" hidden>
+        <p class="ev-play-note" id="evpNote"></p>
+        <button type="button" class="ev-btn ev-btn--ghost" id="evpFinish" hidden>أنهيت اللعبة</button>
+      </div>
+
+    </main>
+
+    <div class="ev-overlay" id="evpOverlay" aria-hidden="true">
+      <div class="ev-modal" role="dialog" aria-modal="true" aria-labelledby="evpResultTitle">
+        <h2 class="ev-modal-title" id="evpResultTitle"></h2>
+        <p class="ev-modal-text" id="evpResultText"></p>
+        <a class="ev-btn ev-btn--block" id="evpResultLink" href="events.html">العودة إلى الأحداث</a>
+      </div>
+    </div>
+
+  </div>
+
+  <script type="module" src="js/event-play.js"></script>
+  <script type="module" src="js/barai/index.js"></script>
+</body>
+</html>

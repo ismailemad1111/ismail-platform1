@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#17191D" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="description" content="منصة أ/ إسماعيل عماد التعليمية — تفاصيل الحدث" />
+
+  <title>تفاصيل الحدث — منصة أ/ إسماعيل عماد</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Reem+Kufi:wght@500;700&family=Inter:wght@500;700;800&display=swap"
+    rel="stylesheet"
+  />
+
+  <!-- Project Styles -->
+  <link rel="stylesheet" href="css/tokens.css" />
+  <link rel="stylesheet" href="css/icons.css" />
+  <link rel="stylesheet" href="css/base.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/layout.css" />
+  <link rel="stylesheet" href="css/screens.css" />
+  <link rel="stylesheet" href="css/editorial-redesign.css" />
+  <link rel="stylesheet" href="css/events.css" />
+  <link rel="stylesheet" href="css/mascot.css" />
+  <link rel="stylesheet" href="css/barai.css" />
+</head>
+
+<body>
+  <div class="ev-page">
+
+    <header class="ev-header">
+      <div class="ev-header-inner">
+        <a href="events.html" class="ev-back" aria-label="رجوع إلى الأحداث"><span class="icon icon-arrow-forward" aria-hidden="true"></span></a>
+        <div class="ev-header-text">
+          <h1 class="ev-title">تفاصيل الحدث</h1>
+        </div>
+      </div>
+    </header>
+
+    <main class="ev-content">
+
+      <div class="ev-skeleton" id="evdSkeleton" style="grid-template-columns:1fr">
+        <div class="ev-skeleton-card" style="height:360px"></div>
+      </div>
+
+      <article class="ev-hero" id="evdHero" hidden>
+        <div class="ev-media" id="evdMedia"></div>
+        <div class="ev-hero-body">
+          <div class="ev-badges" id="evdBadges"></div>
+          <h2 class="ev-hero-title" id="evdTitle"></h2>
+          <p class="ev-desc" id="evdDesc"></p>
+
+          <div class="ev-facts">
+            <div class="ev-fact"><p class="ev-fact-label">يبدأ</p><p class="ev-fact-value" id="evdStart">—</p></div>
+            <div class="ev-fact"><p class="ev-fact-label">ينتهي</p><p class="ev-fact-value" id="evdEnd">—</p></div>
+            <div class="ev-fact"><p class="ev-fact-label">المرحلة</p><p class="ev-fact-value" id="evdStage">—</p></div>
+            <div class="ev-fact" id="evdScoreFact" hidden><p class="ev-fact-label">النقاط</p><p class="ev-fact-value" id="evdScore">—</p></div>
+          </div>
+
+          <p class="ev-callout" id="evdNote" role="status" hidden></p>
+
+          <div class="ev-actions">
+            <a class="ev-btn ev-btn--block" id="evdPlay" href="#" hidden>
+              <span class="icon icon-play" aria-hidden="true"></span>
+              <span id="evdPlayLabel">ابدأ اللعبة</span>
+            </a>
+            <button type="button" class="ev-btn ev-btn--block" id="evdJoin" hidden>الدخول إلى الحدث</button>
+            <button type="button" class="ev-btn ev-btn--block" id="evdDisabled" disabled hidden></button>
+          </div>
+        </div>
+      </article>
+
+      <div class="ev-state" id="evdError" hidden>
+        <div class="ev-state-icon" aria-hidden="true"><span class="icon icon-warning"></span></div>
+        <h2 class="ev-state-title" id="evdErrorTitle">تعذر تحميل الحدث</h2>
+        <p class="ev-state-text" id="evdErrorText">تأكد من اتصالك بالإنترنت وحاول مرة أخرى.</p>
+        <a class="ev-btn" href="events.html">العودة إلى الأحداث</a>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Bottom Navigation Slot -->
+  <div id="bottomNavSlot"></div>
+
+  <script type="module" src="js/event.js"></script>
+  <script type="module" src="js/barai/index.js"></script>
+</body>
+</html>
