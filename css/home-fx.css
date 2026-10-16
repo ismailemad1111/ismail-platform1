@@ -1,0 +1,41 @@
+/* home-fx.css — لمسات الرئيسية (يُحمَّل آخر شيء) */
+.home-stat-value,#progressValue{font-variant-numeric:tabular-nums}
+.hs-sky{transform:translate3d(0,calc(var(--sy,0)*-.12px),0)}
+.hs-sun,.hs-moon,.hs-cloud{will-change:transform}
+
+/* بطاقات الأدوات: إضاءة تتبع المؤشر + موجة لمس */
+.home-tools-item{position:relative;overflow:hidden}
+.hfx-glow{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity .3s;border-radius:inherit;
+  background:radial-gradient(240px circle at var(--mx,50%) var(--my,50%),rgba(255,255,255,.26),transparent 62%)}
+@media(hover:hover) and (pointer:fine){.home-tools-item:hover .hfx-glow{opacity:1}}
+.hfx-ripple{position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:rgba(255,255,255,.5);pointer-events:none;animation:hfxRip .65s ease-out forwards}
+@keyframes hfxRip{to{transform:scale(26);opacity:0}}
+
+/* شريط التقدم: لمعة تمر + نبض عند الاكتمال */
+.home-progress-bar{position:relative;overflow:hidden}
+.home-progress-bar-fill{position:relative;transition:width 1.2s cubic-bezier(.2,.8,.2,1)}
+.home-progress-bar-fill::after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 30%,rgba(255,255,255,.55) 50%,transparent 70%);transform:translateX(-120%);animation:hfxShine 3.2s 1.2s ease-in-out 3}
+@keyframes hfxShine{60%,100%{transform:translateX(120%)}}
+
+/* بطاقة «الأهم الآن»: وهج هادئ يتنفس */
+.hero-action.hero-action{animation:hfxBreath 4.2s ease-in-out 3}
+@keyframes hfxBreath{50%{filter:saturate(1.12) brightness(1.04)}}
+
+/* إحصاءات: رفعة خفيفة عند اللمس */
+.home-stat{transition:transform .2s,box-shadow .2s}
+.home-stat:active{transform:scale(.97)}
+@media(hover:hover) and (pointer:fine){.home-stat:hover{transform:translateY(-3px);box-shadow:var(--shadow-lifted)}}
+
+@media (prefers-reduced-motion:reduce){.home-progress-bar-fill::after,.hero-action.hero-action{animation:none}.hfx-ripple{display:none}}
+
+/* وصول بعد الدخول */
+.hfx-arrive .home-welcome{animation:hfxCircle 1s cubic-bezier(.7,0,.2,1) both}
+@keyframes hfxCircle{from{clip-path:circle(0 at 50% 0)}to{clip-path:circle(150vmax at 50% 0)}}
+.hfx-arrive .home-greeting{animation:hfxSlide .7s .35s cubic-bezier(.2,.8,.2,1) both}
+.hfx-arrive .home-mascot{animation:hfxPop .7s .6s cubic-bezier(.3,1.6,.5,1) both}
+.hfx-arrive .home-tools-item{animation:hfxSlide .6s both cubic-bezier(.2,.8,.2,1)}
+.hfx-arrive .home-tools-item:nth-child(1){animation-delay:.5s}.hfx-arrive .home-tools-item:nth-child(2){animation-delay:.58s}
+.hfx-arrive .home-tools-item:nth-child(3){animation-delay:.66s}.hfx-arrive .home-tools-item:nth-child(4){animation-delay:.74s}
+.hfx-arrive .home-tools-item:nth-child(n+5){animation-delay:.82s}
+@keyframes hfxSlide{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:none}}
+@keyframes hfxPop{from{opacity:0;transform:scale(.4) rotate(-12deg)}to{opacity:1;transform:none}}
