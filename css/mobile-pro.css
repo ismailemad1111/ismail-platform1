@@ -1,0 +1,39 @@
+/* mobile-pro.css — صقل الهاتف أولًا (360px+): لمس، طبقات، Safe Areas، حركة. عرض فقط. */
+html { -webkit-tap-highlight-color: transparent; scroll-padding-top: calc(var(--safe-top) + 64px); }
+body { overflow-x: clip; }
+img, svg, video { max-width: 100%; }
+/* ضغط بصري موحّد (CSS فقط) */
+button, .btn, [class*="btn"], a[class*="item"], a[class*="card"], [class*="-card"], [class*="-chip"], [class*="-tab"] {
+  touch-action: manipulation;
+}
+@media (hover: none) {
+  button:not(:disabled):active, a[class*="item"]:active, a[class*="card"]:active, [class*="-chip"]:active {
+    transform: scale(.97); transition: transform .12s var(--ease-out);
+  }
+}
+:is(button, a, [role="tab"], select, input):focus-visible { outline: 3px solid var(--color-yellow); outline-offset: 2px; }
+/* مساحة لمس مريحة */
+:is(.bk-tab, .bk-chip, .bk-refresh, .bk-btn, .ex-btn, .ls-tab) { min-height: var(--touch-min); }
+/* بطاقات بطبقات وظل ناعم */
+:is(.bk-card, .bk-order, .ex-card, .ls-card, .ann-card, .pf-section, .pl-section) {
+  box-shadow: 0 1px 0 rgba(255,255,255,.6) inset, var(--shadow-card);
+  border-radius: var(--radius-lg);
+}
+/* الرئيسية: لمسة تدرّج خفيفة خلف الترحيب */
+.home-welcome { background: radial-gradient(120% 80% at 100% 0, var(--color-primary-light) 0, rgba(255,240,241,0) 60%), var(--color-bg); }
+@media (max-width: 380px) {
+  .home-content, .bk-content { padding-inline: 12px; }
+  .home-greeting { font-size: 21px; }
+}
+@media (min-width: 768px) { .home-content, .bk-content { max-width: 760px; } }
+/* Lottie */
+[data-lottie] { display: block; margin-inline: auto; }
+[data-lottie="loader"] { width: 56px; height: 56px; }
+.fx-celebrate { position: fixed; inset: 0; z-index: var(--z-toast); pointer-events: none; display: grid; place-items: center; }
+.fx-celebrate > * { width: min(78vw, 300px) !important; height: auto !important; }
+/* GSAP: امنع وميض العناصر قبل التحريك */
+.fx-gsap [data-fxd] { will-change: transform, opacity; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  .fx-celebrate { display: none; }
+}

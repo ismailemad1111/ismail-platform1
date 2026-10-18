@@ -1,0 +1,178 @@
+/* ============================================================
+   barai.css — فقاعة برعي ولحظاته. transform/opacity فقط.
+   مثبّتة أسفل اليسار فوق الشريط السفلي (76px) والمساحة الآمنة.
+   ============================================================ */
+.barai-bubble {
+  position: fixed;
+  left: 12px;
+  bottom: calc(76px + var(--safe-bottom, env(safe-area-inset-bottom, 0px)) + 12px + var(--barai-kb, 0px) + var(--barai-raise, 0px));
+  z-index: 1500;                       /* فوق الشريط (200) وتحت التنبيهات (2000) وبطاقة الانتقال (2100) */
+  display: flex; flex-direction: row; align-items: flex-end; gap: 4px;
+  direction: ltr;
+  max-width: min(340px, calc(100vw - 24px));
+  pointer-events: none;
+  opacity: 0; transform: translateY(16px);
+  transition: opacity .25s ease, transform .3s cubic-bezier(.22, 1, .36, 1);
+}
+.barai-bubble.is-in { opacity: 1; transform: none; }
+.barai-bubble.no-nav { bottom: calc(var(--safe-bottom, env(safe-area-inset-bottom, 0px)) + 16px + var(--barai-kb, 0px) + var(--barai-raise, 0px)); }
+/* أعلى الشاشة حين لا يتّسع المكان فوق العنصر الذي يجب تجنّبه */
+.barai-bubble.is-top, .barai-bubble.no-nav.is-top { bottom: auto; }
+.barai-bubble .mascot { width: 56px; height: 56px; flex: 0 0 auto; margin-bottom: -4px; }
+.barai-card {
+  position: relative; direction: rtl; text-align: right; pointer-events: auto;
+  background: var(--barai-card-bg, #fff); color: #17191D;
+  border: 2px solid #17191D; border-radius: 16px 16px 16px 4px;
+  padding: 10px 34px 10px 12px;
+  font-size: 14px; line-height: 1.6; font-weight: 600;
+  box-shadow: 0 6px 18px rgba(23, 25, 29, .16);
+}
+.barai-text { margin: 0; }
+.barai-close {
+  position: absolute; top: 2px; right: 2px; width: 32px; height: 32px;
+  display: grid; place-items: center; border: 0; background: transparent; color: #454349;
+  font-size: 20px; line-height: 1; border-radius: 50%; cursor: pointer;
+}
+.barai-close:focus-visible, .barai-action:focus-visible { outline: 3px solid #17191D; outline-offset: 2px; }
+.barai-action {
+  display: inline-flex; align-items: center; min-height: 36px; margin-top: 8px; padding: 0 14px;
+  border-radius: 999px; background: #B91C2C; color: #fff; font-weight: 700; font-size: 13px;
+  text-decoration: none; border: 0; cursor: pointer;
+}
+
+.barai-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.barai-actions .barai-action { margin-top: 0; }
+.barai-action.is-secondary { background: #fff; color: #8F1420; border: 2px solid #B91C2C; }
+
+/* ذيل الفقاعة يشير إلى برعي */
+.barai-bubble .barai-card::after {
+  content: ""; position: absolute; left: -7px; bottom: 16px; width: 12px; height: 12px;
+  background: var(--barai-card-bg, #fff); border-left: 2px solid #17191D; border-bottom: 2px solid #17191D;
+  transform: rotate(45deg);
+}
+
+/* لحظة كاملة */
+.barai-moment {
+  position: fixed; inset-inline: 0; bottom: calc(76px + var(--safe-bottom, env(safe-area-inset-bottom, 0px)) + 16px);
+  z-index: 1500; display: flex; justify-content: center; pointer-events: none;
+  opacity: 0; transform: translateY(24px) scale(.96);
+  transition: opacity .3s ease, transform .4s cubic-bezier(.22, 1, .36, 1);
+}
+.barai-moment.is-in { opacity: 1; transform: none; }
+.barai-moment .barai-card {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  border-radius: 20px; padding: 12px 36px 14px; max-width: min(320px, calc(100vw - 24px));
+}
+.barai-moment .mascot { width: 128px; height: 128px; }
+
+/* مدمج في الصفحة */
+.barai-inline { display: flex; align-items: center; gap: 12px; }
+.barai-inline .mascot { width: 72px; height: 72px; flex: 0 0 auto; }
+.barai-inline.is-xs .mascot { width: 40px; height: 40px; }
+.barai-inline-text { margin: 0; flex: 1; min-width: 0; font-weight: 600; }
+
+/* اختيار مستوى برعي في الملف الشخصي */
+.barai-pref { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.barai-pref .mascot { width: 56px; height: 56px; }
+.barai-pref-seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.barai-pref-btn {
+  min-height: 44px; padding: 0 16px; border-radius: 999px; border: 2px solid #17191D; background: #fff;
+  font: inherit; font-weight: 700; cursor: pointer;
+}
+.barai-pref-btn[aria-pressed="true"] { background: #B91C2C; border-color: #B91C2C; color: #fff; }
+
+/* برعي الهادئ (بلا نص) داخل مربع أيقونة الترويسة */
+.barai-ambient-on { overflow: visible; }
+.barai-ambient-on > .mascot { width: 100%; height: 100%; }
+.barai-ambient-on > .icon { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .barai-bubble, .barai-moment { transition: opacity .15s linear; transform: none; }
+}
+
+.barai-result-line { margin: 8px auto 0; max-width: 28em; text-align: center; font-weight: 700; font-size: 15px; line-height: 1.6; }
+
+
+/* ============================================================
+   الجولة الثالثة: لمسة حسب نبرة التعبير (data-tone) + اختيارات التفاعل
+   ألوان المنصة فقط (أصفر الماركر للإنجاز، أزرق هادئ لليل/الراحة)، وحركة الدخول transform/opacity.
+   ============================================================ */
+.barai-bubble[data-tone="celebrate"], .barai-moment[data-tone="celebrate"] { --barai-card-bg: var(--color-yellow-light, #FFF7DF); }
+.barai-bubble[data-tone="alert"] { --barai-card-bg: #FFF9E5; }
+.barai-bubble[data-tone="alert"] .barai-card { border-color: #7A5A0A; }
+.barai-bubble[data-tone="calm"] { --barai-card-bg: #F1F5FB; }
+.barai-bubble[data-tone="think"] { --barai-card-bg: #F5F7FF; }
+
+/* دخول احتفالي: ارتداد خفيف مرة واحدة */
+.barai-bubble[data-tone="celebrate"] { transition-timing-function: ease, cubic-bezier(.34, 1.56, .64, 1); }
+/* تنبيه لطيف: يدخل بهدوء ثم «هزّة» صغيرة واحدة (لا تكرار) */
+.barai-bubble[data-tone="alert"].is-in .barai-card { animation: barai-nudge .5s ease-out .25s 1; }
+/* هدوء/ليل: دخول أبطأ */
+.barai-bubble[data-tone="calm"] { transition-duration: .4s, .5s; }
+@keyframes barai-nudge { 0%, 100% { transform: translateX(0); } 30% { transform: translateX(-3px); } 65% { transform: translateX(3px); } }
+
+/* اختيارات التفاعل (شرائح صغيرة) */
+.barai-choice {
+  display: inline-flex; align-items: center; min-height: 36px; padding: 0 12px;
+  border-radius: 999px; border: 2px solid #17191D; background: #fff; color: #17191D;
+  font: inherit; font-weight: 700; font-size: 13px; text-decoration: none; cursor: pointer;
+}
+.barai-choice:hover { background: var(--color-yellow-light, #FFF7DF); }
+.barai-choice:focus-visible { outline: 3px solid #17191D; outline-offset: 2px; }
+.barai-actions.has-choices { gap: 6px; }
+/* تبديل المحتوى داخل نفس البطاقة (خطوة تالية) */
+.barai-bubble .barai-card { animation: barai-step .22s ease-out 1; }
+@keyframes barai-step { from { opacity: .35; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .barai-bubble[data-tone="alert"].is-in .barai-card,
+  .barai-bubble .barai-card { animation: none; }
+}
+
+
+/* ============================================================
+   Evolution X: نوع الرسالة، تقدّم التفاعل، إبراز عنصر حقيقي، وحركة مخففة يختارها الطالب
+   ألوان المنصة فقط؛ الحركة transform/opacity وتتوقف مع تقليل الحركة (النظام أو اختيار الطالب).
+   ============================================================ */
+.barai-bubble[data-kind="guide"] .barai-card { border-inline-start: 5px solid #6498EF; }
+.barai-bubble[data-kind="hint"] .barai-card { border-inline-start: 5px solid #E8B94F; }
+.barai-bubble[data-kind="encourage"] .barai-card { border-inline-start: 5px solid #4FAF83; }
+.barai-bubble[data-kind="alert"] .barai-card { border-inline-start: 5px solid #FF4654; }
+.barai-bubble[data-kind="reply"] .barai-card { border-inline-start: 5px solid #A58AE8; }
+
+/* «خطوة س من ص» */
+.barai-progress { display: flex; gap: 5px; margin-top: 8px; align-items: center; }
+.barai-progress i { width: 18px; height: 5px; border-radius: 3px; background: rgba(23, 25, 29, .18); transition: background .2s; }
+.barai-progress i.on { background: #17191D; }
+
+/* إبراز عنصر حقيقي في الصفحة بطلب الطالب (وريني…) */
+.barai-pulse { outline: 3px solid #E8B94F; outline-offset: 3px; border-radius: 12px; animation: barai-pulse 1.1s ease-in-out 2; }
+@keyframes barai-pulse { 0%, 100% { outline-color: #E8B94F; } 50% { outline-color: #FF4654; } }
+
+/* تعبيران جديدان: هدوء (تنفّس بطيء) وإرشاد (إيماءة سهم خفيفة) */
+.mascot.is-calm .rb-float { animation: rb-calm 4.5s ease-in-out infinite; }
+.mascot.is-guide .rb-glow { animation: rb-guide 1.4s ease-in-out 3; }
+@keyframes rb-calm { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025); } }
+@keyframes rb-guide { 0%, 100% { transform: translate(128px, 74px); } 50% { transform: translate(134px, 74px); } }
+
+/* حركة مخففة يختارها الطالب من الملف الشخصي: نفس بدائل «تقليل الحركة» على عناصر برعي فقط */
+html[data-barai-motion="reduced"] .mascot *,
+html[data-barai-motion="reduced"] .mascot,
+html[data-barai-motion="reduced"] .barai-card,
+html[data-barai-motion="reduced"] .barai-pulse { animation: none !important; }
+html[data-barai-motion="reduced"] .mascot .rb-eyes { transform: none !important; transition: none; }
+html[data-barai-motion="reduced"] .barai-bubble, html[data-barai-motion="reduced"] .barai-moment { transition: opacity .15s linear; transform: none; }
+html[data-barai-motion="reduced"] .cf-layer { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .barai-pulse { animation: none; }
+  .mascot.is-calm .rb-float, .mascot.is-guide .rb-glow { animation: none !important; }
+  .barai-progress i { transition: none; }
+}
+
+/* تفضيلات الملف الشخصي: صفوف متعددة + أزرار إعادة الضبط */
+.barai-pref-row { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 10px; }
+.barai-pref-label { font-weight: 700; font-size: 14px; min-width: 9em; }
+.barai-pref-actions { gap: 8px; }
+.barai-pref-danger { border-color: #7A1F28; }
+.barai-pref-note { margin: 8px 0 0; font-size: 13px; font-weight: 700; min-height: 1.4em; }
