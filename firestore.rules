@@ -1,0 +1,645 @@
+rules_version = '2';
+
+/* ============================================================
+   قواعد Firestore — منصة أ/ إسماعيل عماد
+   ------------------------------------------------------------
+   الهوية تأتي من Firebase Authentication:
+   - الأدمن: لديه مستند admins/{uid}.
+   - الطالب: بريده الوهمي <الكود>@students.mrismailemad.com،
+     ويُسمح له فقط إذا كان مستند الكود codes/{الكود} بحالة active
+     ومرتبطًا به ولم تنتهِ صلاحيته (تعطيل الكود يقطع كل صلاحياته فورًا).
+   ⚠️ لو غيّرت النطاق في js/backend/core.js غيّره هنا أيضًا.
+   ============================================================ */
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* ---------------- دوال مساعدة ---------------- */
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.get('status', 'active') != 'disabled';
+    }
+
+    function isStudentMail() {
+      return signedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.matches('^[0-9]{5}@students[.]mrismailemad[.]com$');
+    }
+
+    function myCode() {
+      return request.auth.token.email.split('@')[0];
+    }
+
+    function myCodeDoc() {
+      return get(/databases/$(database)/documents/codes/$(myCode())).data;
+    }
+
+    // طالب مفعّل وصلاحية كوده سارية
+    function studentOk() {
+      return isStudentMail()
+        && exists(/databases/$(database)/documents/codes/$(myCode()))
+        && myCodeDoc().status == 'active'
+        && myCodeDoc().studentId == request.auth.uid
+        && (myCodeDoc().get('expiresAt', null) == null || myCodeDoc().expiresAt > request.time);
+    }
+
+    function validStage(s) {
+      return s in ['grade_4', 'grade_5', 'grade_6', 'prep_1', 'prep_2', 'prep_3', 'sec_1', 'sec_2', 'sec_3'];
+    }
+
+    // المعرّف يبدأ بـ uid الطالب (مثل {uid}_{lessonId})
+    function idStartsWithMe(id) {
+      return id.matches(request.auth.uid + '_.*');
+    }
+
+    // المعرّف ينتهي بـ uid الطالب (مثل {examId}_{uid})
+    function idEndsWithMe(id) {
+      return id.matches('.*_' + request.auth.uid);
+    }
+
+    /* ---------------- الأدمن وقفل الإنشاء ---------------- */
+
+    match /admins/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list: if isAdmin();
+
+      // إنشاء الأدمن الأول فقط (قبل وجود قفل adminLock)
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && !exists(/databases/$(database)/documents/config/adminLock)
+        && request.resource.data.keys().hasOnly(['email', 'name', 'status', 'createdAt'])
+        && request.resource.data.email == request.auth.token.email;
+
+      allow update, delete: if isAdmin();
+    }
+
+    match /config/{doc} {
+      allow read: if isAdmin();
+      allow create: if signedIn()
+        && doc == 'adminLock'
+        && existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid));
+      allow update, delete: if false;
+    }
+
+    /* ---------------- الإعدادات ---------------- */
+
+    match /settings/{doc} {
+      // general يقرؤه الجميع (صفحة الاشتراك عامة)، و ai للطلاب المفعّلين والأدمن
+      allow get: if isAdmin()
+        || doc == 'general'
+        || (doc == 'ai' && studentOk());
+      allow list: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    /* ---------------- الأكواد ---------------- */
+
+    match /codes/{code} {
+      allow get: if isAdmin() || (isStudentMail() && myCode() == code);
+      allow list: if isAdmin();
+      allow create, delete: if isAdmin();
+
+      allow update: if isAdmin() || (
+        isStudentMail()
+        && myCode() == code
+        && resource.data.status == 'unused'
+        && request.resource.data.status == 'active'
+        && request.resource.data.studentId == request.auth.uid
+        && validStage(request.resource.data.stage)
+        && request.resource.data.activatedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'studentId', 'stage', 'activatedAt'])
+      );
+    }
+
+    /* ---------------- الطلاب ---------------- */
+
+    match /students/{uid} {
+      allow get: if isAdmin() || (request.auth.uid == uid && studentOk());
+      allow list: if isAdmin();
+
+      // أول دخول: الطالب ينشئ مستنده مرة واحدة أثناء تفعيل كوده
+      allow create: if isAdmin() || (
+        isStudentMail()
+        && request.auth.uid == uid
+        && get(/databases/$(database)/documents/codes/$(myCode())).data.get('status', 'unused') == 'unused'
+        && existsAfter(/databases/$(database)/documents/codes/$(myCode()))
+        && getAfter(/databases/$(database)/documents/codes/$(myCode())).data.status == 'active'
+        && getAfter(/databases/$(database)/documents/codes/$(myCode())).data.studentId == uid
+        && request.resource.data.keys().hasOnly(['fullName', 'stage', 'code', 'joinedAt', 'studyHoursTotal', 'lastLogin', 'status'])
+        && request.resource.data.status == 'active'
+        && request.resource.data.studyHoursTotal == 0
+        && request.resource.data.code == myCode()
+        && validStage(request.resource.data.stage)
+        && request.resource.data.fullName is string
+        && request.resource.data.fullName.size() >= 3
+        && request.resource.data.fullName.size() <= 100
+      );
+
+      allow update: if isAdmin() || (
+        request.auth.uid == uid
+        && studentOk()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastLogin', 'studyHoursTotal'])
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    /* ---------------- الدروس ---------------- */
+
+    match /lessons/{id} {
+      allow read: if isAdmin() || studentOk();
+      allow write: if isAdmin();
+    }
+
+    match /lessonGroups/{id} {
+      allow read: if true;            // صفحة الاشتراك العامة
+      allow write: if isAdmin();
+    }
+
+    match /lessonProgress/{id} {
+      allow get: if isAdmin() || (studentOk() && idStartsWithMe(id));
+      allow list: if isAdmin() || (studentOk() && resource.data.studentId == request.auth.uid);
+      allow create, update: if isAdmin() || (
+        studentOk() && idStartsWithMe(id) && request.resource.data.studentId == request.auth.uid
+      );
+      allow delete: if isAdmin();
+    }
+
+    /* ---------------- الإعلانات ---------------- */
+
+    match /announcements/{id} {
+      allow get, list: if isAdmin() || (
+        studentOk() && (
+          resource.data.targetType == 'all'
+          || resource.data.targetType == 'stage'
+          || (resource.data.targetType == 'student' && resource.data.targetValue == request.auth.uid)
+        )
+      );
+      allow write: if isAdmin();
+    }
+
+    match /announcementReads/{id} {
+      allow get: if isAdmin() || (studentOk() && idStartsWithMe(id));
+      allow list: if isAdmin() || (studentOk() && resource.data.studentId == request.auth.uid);
+      allow create, update: if isAdmin() || (
+        studentOk() && idStartsWithMe(id) && request.resource.data.studentId == request.auth.uid
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /announcementReplies/{id} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() || (
+        studentOk()
+        && request.resource.data.studentId == request.auth.uid
+        && request.resource.data.message is string
+        && request.resource.data.message.size() <= 2000
+      );
+      allow update, delete: if isAdmin();
+    }
+
+    /* ---------------- الاختبارات ---------------- */
+
+    match /exams/{id} {
+      allow get, list: if isAdmin() || (studentOk() && resource.data.status == 'published');
+      allow write: if isAdmin();
+    }
+
+    match /examAttempts/{id} {
+      allow get: if isAdmin() || (studentOk() && idEndsWithMe(id));
+      allow list: if isAdmin() || (studentOk() && resource.data.studentId == request.auth.uid);
+
+      // محاولة واحدة: إنشاء فقط بمعرّف ثابت {examId}_{uid}
+      allow create: if isAdmin() || (
+        studentOk()
+        && request.resource.data.studentId == request.auth.uid
+        && id == request.resource.data.examId + '_' + request.auth.uid
+      );
+
+      // الطالب يستطيع فقط إظهار نتيجته بعد حلول موعدها
+      allow update: if isAdmin() || (
+        studentOk()
+        && resource.data.studentId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['resultVisible'])
+        && request.resource.data.resultVisible == true
+        && resource.data.visibleAt != null
+        && request.time >= resource.data.visibleAt
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    /* ---------------- المنظّم والمذاكرة والمساعد ---------------- */
+
+    match /planner/{id} {
+      allow get, create, update: if isAdmin() || (studentOk() && idStartsWithMe(id));
+      allow list, delete: if isAdmin();
+    }
+
+    match /studySessions/{id} {
+      allow read: if isAdmin() || (studentOk() && resource.data.studentId == request.auth.uid);
+      allow create: if isAdmin() || (
+        studentOk() && request.resource.data.studentId == request.auth.uid
+      );
+      allow update, delete: if isAdmin();
+    }
+
+    match /aiUsage/{id} {
+      allow get, create, update: if isAdmin() || (studentOk() && idStartsWithMe(id));
+      allow list, delete: if isAdmin();
+    }
+
+    /* ---------------- طلبات الاشتراك (عامة الإنشاء) ---------------- */
+
+    match /subscriptionRequests/{id} {
+      allow create: if isAdmin() || (
+        request.resource.data.keys().hasOnly(
+          ['stage', 'lessonGroupId', 'lessonGroupName', 'fullName', 'phone', 'status', 'createdAt', 'updatedAt'])
+        && request.resource.data.status == 'pending'
+        && validStage(request.resource.data.stage)
+        && request.resource.data.fullName is string
+        && request.resource.data.fullName.size() >= 3
+        && request.resource.data.fullName.size() <= 100
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() >= 6
+        && request.resource.data.phone.size() <= 20
+        && request.resource.data.createdAt == request.time
+      );
+      allow read, update, delete: if isAdmin();
+    }
+
+    /* ============================================================
+       بنك مستر إسماعيل  (إضافة جديدة — لا تغيّر أي قاعدة أعلاه)
+       ------------------------------------------------------------
+       لا توجد Cloud Functions، لذلك تُنفَّذ عملية طلب الجائزة من المتصفح
+       داخل Firestore Transaction واحدة، وتتحقق القواعد هنا من أن:
+         - السعر والرصيد والكمية تطابق القيم الفعلية في القاعدة،
+         - الخصم = سعر الجائزة بالضبط، ولا رصيد سالب،
+         - مستند الطلب + تحديث المحفظة + معاملة الخصم + (المخزون) تُكتب معًا،
+         - الطالب لا يستطيع كتابة رصيده بأي طريقة أخرى.
+       الأدمن وحده يضيف/يخصم رصيدًا ويغيّر حالات الطلبات ويرفع المنع.
+       السجلات التاريخية (طلبات/معاملات/منع/محافظ/جوائز) لا تُحذف أبدًا؛
+       الاستثناء الوحيد: مستند التهيئة المؤقت (_placeholder: true) للأدمن.
+       ============================================================ */
+
+    function bankRewardPath(id) {
+      return /databases/$(database)/documents/bankRewards/$(id);
+    }
+    function bankWalletPath(id) {
+      return /databases/$(database)/documents/bankWallets/$(id);
+    }
+    function bankOrderPath(id) {
+      return /databases/$(database)/documents/bankOrders/$(id);
+    }
+    function bankBanPath(id) {
+      return /databases/$(database)/documents/bankBans/$(id);
+    }
+
+    // معرّف آمن (يمنع إدخال "/" داخل المسار)
+    function bankKey(s) {
+      return s is string && s.matches('[A-Za-z0-9_-]{1,120}');
+    }
+
+    function bankPlaceholder() {
+      return resource.data.get('_placeholder', false) == true;
+    }
+
+    function bankIsPlaceholderWrite() {
+      return request.resource.data.get('_placeholder', false) == true;
+    }
+
+    // لا منع ساريًا (أو انتهت مدته) — يعتمد على وقت الخادم request.time
+    function bankNotBlocked(w) {
+      return w.get('blockedUntil', null) == null || w.blockedUntil <= request.time;
+    }
+
+    function bankValidReward(d) {
+      return d.name is string && d.name.size() >= 1 && d.name.size() <= 100
+        && d.get('description', '') is string && d.get('description', '').size() <= 1000
+        && d.get('imageUrl', '') is string && d.get('imageUrl', '').size() <= 250000
+        && d.price is int && d.price >= 1 && d.price <= 1000000
+        && d.published is bool
+        && d.requestable is bool
+        && d.limited is bool
+        && (d.limited == false
+            ? d.get('stock', null) == null
+            : (d.stock is int && d.stock >= 0 && d.stock <= 1000000));
+    }
+
+    /* ---------------- الجوائز ---------------- */
+
+    // الطالب يزيد استهلاك المخزون بمقدار 1 فقط، وفي نفس عملية إنشاء طلب جديد له
+    function bankStudentStockDecrement(rewardId) {
+      let w = getAfter(bankWalletPath(request.auth.uid)).data;
+      let oid = w.get('lastOrderId', '');
+      return studentOk()
+        && resource.data.published == true
+        && resource.data.limited == true
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock'])
+        && request.resource.data.stock == resource.data.stock - 1
+        && request.resource.data.stock >= 0
+        && bankKey(oid)
+        && !exists(bankOrderPath(oid))
+        && existsAfter(bankOrderPath(oid))
+        && getAfter(bankOrderPath(oid)).data.studentId == request.auth.uid
+        && getAfter(bankOrderPath(oid)).data.rewardId == rewardId;
+    }
+
+    match /bankRewards/{id} {
+      allow get, list: if isAdmin() || (studentOk() && resource.data.published == true);
+      allow create: if isAdmin() && (bankIsPlaceholderWrite() || bankValidReward(request.resource.data));
+      allow update: if (isAdmin() && bankValidReward(request.resource.data))
+        || bankStudentStockDecrement(id);
+      allow delete: if isAdmin() && bankPlaceholder();
+    }
+
+    /* ---------------- المحافظ (مستند الطالب = uid) ---------------- */
+
+    function bankWalletPurchaseOk() {
+      let d = request.resource.data;
+      let oid = d.get('lastOrderId', '');
+      return d.diff(resource.data).affectedKeys().hasOnly(['balance', 'updatedAt', 'lastOrderId'])
+        && bankKey(oid)
+        && d.balance is int
+        && d.balance >= 0
+        && d.updatedAt == request.time
+        && bankNotBlocked(resource.data)
+        && !exists(bankOrderPath(oid))
+        && existsAfter(bankOrderPath(oid))
+        && getAfter(bankOrderPath(oid)).data.studentId == request.auth.uid
+        && getAfter(bankOrderPath(oid)).data.balanceBefore == resource.data.balance
+        && d.balance == resource.data.balance - getAfter(bankOrderPath(oid)).data.price;
+    }
+
+    function bankWalletBanOk() {
+      let d = request.resource.data;
+      let bid = d.get('lastBanId', '');
+      return d.diff(resource.data).affectedKeys().hasOnly(['blockedUntil', 'updatedAt', 'lastBanId'])
+        && bankKey(bid)
+        && d.updatedAt == request.time
+        && bankNotBlocked(resource.data)
+        && !exists(bankBanPath(bid))
+        && existsAfter(bankBanPath(bid))
+        && getAfter(bankBanPath(bid)).data.studentId == request.auth.uid
+        && d.blockedUntil == getAfter(bankBanPath(bid)).data.endsAt;
+    }
+
+    match /bankWallets/{uid} {
+      allow get: if isAdmin() || (studentOk() && request.auth.uid == uid);
+      allow list: if isAdmin();
+
+      // الطالب ينشئ محفظة فارغة لنفسه فقط (رصيد 0 وبدون منع)
+      allow create: if (isAdmin()
+          && (bankIsPlaceholderWrite()
+              || (request.resource.data.balance is int && request.resource.data.balance >= 0)))
+        || (studentOk()
+          && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(
+               ['studentId', 'studentName', 'studentCode', 'balance', 'blockedUntil', 'createdAt', 'updatedAt'])
+          && request.resource.data.studentId == request.auth.uid
+          && request.resource.data.balance == 0
+          && request.resource.data.blockedUntil == null
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.updatedAt == request.time);
+
+      allow update: if (isAdmin()
+          && request.resource.data.balance is int && request.resource.data.balance >= 0)
+        || (studentOk() && request.auth.uid == uid
+          && (bankWalletPurchaseOk() || bankWalletBanOk()));
+
+      allow delete: if isAdmin() && bankPlaceholder();
+    }
+
+    /* ---------------- الطلبات (المعرّف = {uid}_{مفتاح الطلب}) ---------------- */
+
+    function bankStudentOrderOk(id) {
+      let d = request.resource.data;
+      let rp = bankRewardPath(d.rewardId);
+      let wp = bankWalletPath(request.auth.uid);
+      return studentOk()
+        && idStartsWithMe(id)
+        && d.keys().hasOnly(
+             ['studentId', 'studentName', 'studentCode', 'stage', 'rewardId', 'rewardName', 'price',
+              'quantity', 'status', 'balanceBefore', 'balanceAfter', 'purchaseTxId', 'createdAt', 'updatedAt'])
+        && d.studentId == request.auth.uid
+        && d.status == 'pending'
+        && d.quantity == 1
+        && d.purchaseTxId == id + '_purchase'
+        && bankKey(d.rewardId)
+        && d.price is int
+        && d.price >= 1
+        && get(rp).data.published == true
+        && get(rp).data.requestable == true
+        && get(rp).data.price == d.price
+        && get(rp).data.name == d.rewardName
+        && (get(rp).data.limited != true || get(rp).data.stock >= 1)
+        && (get(rp).data.limited != true || getAfter(rp).data.stock == get(rp).data.stock - 1)
+        && bankNotBlocked(get(wp).data)
+        && get(wp).data.balance >= d.price
+        && d.balanceBefore == get(wp).data.balance
+        && d.balanceAfter == d.balanceBefore - d.price
+        && getAfter(wp).data.balance == d.balanceAfter
+        && getAfter(wp).data.lastOrderId == id
+        && existsAfter(/databases/$(database)/documents/bankTransactions/$(d.purchaseTxId))
+        && d.createdAt == request.time
+        && d.updatedAt == request.time;
+    }
+
+    match /bankOrders/{id} {
+      allow get: if isAdmin() || (studentOk() && idStartsWithMe(id));
+      allow list: if isAdmin() || (studentOk() && resource.data.studentId == request.auth.uid);
+      allow create: if isAdmin() || bankStudentOrderOk(id);
+      allow update: if isAdmin()
+        && request.resource.data.status in ['pending', 'accepted', 'ready', 'delivered', 'rejected'];
+      allow delete: if isAdmin() && bankPlaceholder();
+    }
+
+    /* ---------------- سجل المعاملات (لا يُعدَّل ولا يُحذف) ---------------- */
+
+    function bankStudentPurchaseTxOk(id) {
+      let d = request.resource.data;
+      let op = bankOrderPath(d.orderId);
+      return studentOk()
+        && idStartsWithMe(id)
+        && d.keys().hasOnly(
+             ['studentId', 'type', 'amount', 'balanceBefore', 'balanceAfter', 'reason', 'orderId', 'rewardId', 'createdAt'])
+        && d.studentId == request.auth.uid
+        && d.type == 'purchase'
+        && bankKey(d.orderId)
+        && id == d.orderId + '_purchase'
+        && existsAfter(op)
+        && getAfter(op).data.studentId == request.auth.uid
+        && d.amount + getAfter(op).data.price == 0
+        && d.balanceBefore == getAfter(op).data.balanceBefore
+        && d.balanceAfter == getAfter(op).data.balanceAfter
+        && d.createdAt == request.time;
+    }
+
+    match /bankTransactions/{id} {
+      allow get: if isAdmin() || (studentOk() && idStartsWithMe(id));
+      allow list: if isAdmin() || (studentOk() && resource.data.studentId == request.auth.uid);
+      allow create: if isAdmin() || bankStudentPurchaseTxOk(id);
+      allow update: if false;
+      allow delete: if isAdmin() && bankPlaceholder();
+    }
+
+    /* ---------------- المنع لمدة 30 يومًا (سجل تاريخي) ---------------- */
+
+    function bankStudentBanOk(id) {
+      let d = request.resource.data;
+      let rp = bankRewardPath(d.rewardId);
+      let wp = bankWalletPath(request.auth.uid);
+      return studentOk()
+        && idStartsWithMe(id)
+        && d.keys().hasOnly(
+             ['studentId', 'studentName', 'studentCode', 'reason', 'rewardId', 'rewardName', 'price',
+              'balanceAtAttempt', 'startsAt', 'endsAt', 'status', 'createdAt'])
+        && d.studentId == request.auth.uid
+        && d.reason == 'insufficient_balance'
+        && d.status == 'active'
+        && bankKey(d.rewardId)
+        && d.price is int
+        && get(rp).data.published == true
+        && get(rp).data.requestable == true
+        && (get(rp).data.limited != true || get(rp).data.stock >= 1)
+        && get(rp).data.price == d.price
+        && get(rp).data.name == d.rewardName
+        && bankNotBlocked(get(wp).data)
+        && get(wp).data.balance < d.price
+        && d.balanceAtAttempt == get(wp).data.balance
+        && d.startsAt == request.time
+        && d.createdAt == request.time
+        && d.endsAt + duration.value(1, 'h') >= request.time + duration.value(30, 'd')
+        && d.endsAt <= request.time + duration.value(30, 'd') + duration.value(1, 'h')
+        && getAfter(wp).data.blockedUntil == d.endsAt
+        && getAfter(wp).data.lastBanId == id;
+    }
+
+    match /bankBans/{id} {
+      allow get: if isAdmin() || (studentOk() && idStartsWithMe(id));
+      allow list: if isAdmin() || (studentOk() && resource.data.studentId == request.auth.uid);
+      allow create: if isAdmin() || bankStudentBanOk(id);
+      allow update: if isAdmin();
+      allow delete: if isAdmin() && bankPlaceholder();
+    }
+    /* ============================================================
+       الأحداث والألعاب التفاعلية  (إضافة جديدة — لا تغيّر أي قاعدة أعلاه)
+       ------------------------------------------------------------
+       events/{auto}                        الأدمن وحده يكتب. الطالب يقرأ المنشور
+                                            الذي مرحلته 'all' أو مرحلته هو.
+       eventParticipations/{eventId}_{uid}  مستند واحد لكل طالب/حدث:
+         - الطالب ينشئ مشاركته هو فقط، والحدث منشور وداخل وقته.
+         - الطالب يستطيع فقط تحويلها من started إلى completed مرة واحدة،
+           مع reportedScore اختياري (يبقى reviewStatus = pending).
+         - score المعتمدة وreviewStatus approved/rejected والملاحظات: للأدمن وحده.
+       ⚠️ اسم ملف اللعبة يُفحص هنا: game-<...>.html في الجذر فقط.
+       ============================================================ */
+
+    function evPath(id) {
+      return /databases/$(database)/documents/events/$(id);
+    }
+
+    function evValid(d) {
+      return d.keys().hasOnly(['title', 'description', 'imageUrl', 'startAt', 'endAt', 'status', 'type',
+                               'stage', 'gameFile', 'scoreEnabled', 'maxScore', 'createdBy', 'createdAt', 'updatedAt'])
+        && d.title is string && d.title.size() >= 1 && d.title.size() <= 120
+        && d.get('description', '') is string && d.get('description', '').size() <= 2000
+        && d.get('imageUrl', '') is string && d.get('imageUrl', '').size() <= 250000
+        && d.startAt is timestamp && d.endAt is timestamp && d.endAt > d.startAt
+        && d.status in ['draft', 'published', 'hidden']
+        && d.type in ['game', 'activity']
+        && d.stage is string && (d.stage == 'all' || validStage(d.stage))
+        && d.gameFile is string
+        && (d.gameFile == '' || d.gameFile.matches('game-[A-Za-z0-9_-]{1,60}[.]html'))
+        && (d.type != 'game' || d.gameFile != '')
+        && (d.type == 'game' || d.gameFile == '')
+        && d.scoreEnabled is bool
+        && (d.scoreEnabled == false
+            ? d.get('maxScore', null) == null
+            : (d.type == 'game' && d.maxScore is int && d.maxScore >= 1 && d.maxScore <= 1000000));
+    }
+
+    function evPlaceholderNew() {
+      let d = request.resource.data;
+      return d.get('_placeholder', false) == true
+        && d.keys().hasOnly(['_placeholder', 'note', 'createdAt']);
+    }
+
+    match /events/{id} {
+      allow get, list: if isAdmin() || (
+        studentOk()
+        && resource.data.status == 'published'
+        && (resource.data.stage == 'all' || resource.data.stage == myCodeDoc().get('stage', ''))
+      );
+      // مستند التهيئة المؤقت (setup.js) فقط عند الإنشاء: مفاتيح محدودة ولا يظهر للطلاب (بلا status)
+      allow create: if isAdmin() && (evPlaceholderNew() || evValid(request.resource.data));
+      allow update: if isAdmin() && evValid(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    function evPartCreateOk(id) {
+      let d = request.resource.data;
+      return studentOk()
+        && d.eventId is string
+        && d.eventId.matches('[A-Za-z0-9]{1,40}')
+        && id == d.eventId + '_' + request.auth.uid
+        && d.keys().hasOnly(['eventId', 'studentId', 'studentName', 'studentCode', 'stage', 'status',
+                             'reviewStatus', 'reportedScore', 'score', 'startedAt', 'completedAt', 'updatedAt'])
+        && d.studentId == request.auth.uid
+        && d.studentCode == myCode()
+        && d.stage == myCodeDoc().get('stage', '')
+        && d.studentName == get(/databases/$(database)/documents/students/$(request.auth.uid)).data.get('fullName', '')
+        && d.status == 'started'
+        && d.reviewStatus == 'none'
+        && d.reportedScore == null
+        && d.score == null
+        && d.completedAt == null
+        && d.startedAt == request.time
+        && d.updatedAt == request.time
+        && exists(evPath(d.eventId))
+        && get(evPath(d.eventId)).data.status == 'published'
+        && get(evPath(d.eventId)).data.startAt <= request.time
+        && get(evPath(d.eventId)).data.endAt >= request.time
+        && (get(evPath(d.eventId)).data.stage == 'all'
+            || get(evPath(d.eventId)).data.stage == myCodeDoc().get('stage', ''));
+    }
+
+    // الطالب يُنهي مشاركته مرة واحدة فقط، وأي نتيجة يرسلها تبقى "قيد المراجعة"
+    function evPartCompleteOk() {
+      let d = request.resource.data;
+      let r = resource.data;
+      let ep = evPath(r.eventId);
+      return studentOk()
+        && r.studentId == request.auth.uid
+        && d.diff(r).affectedKeys().hasOnly(['status', 'completedAt', 'reportedScore', 'reviewStatus', 'updatedAt'])
+        && r.status == 'started'
+        && d.status == 'completed'
+        && d.completedAt == request.time
+        && d.updatedAt == request.time
+        && exists(ep)
+        && request.time <= get(ep).data.endAt + duration.value(10, 'm')
+        && (d.reportedScore == null
+            ? d.reviewStatus == 'none'
+            : (get(ep).data.get('scoreEnabled', false) == true
+               && d.reportedScore is int
+               && d.reportedScore >= 0
+               && d.reportedScore <= get(ep).data.get('maxScore', 0)
+               && d.reviewStatus == 'pending'));
+    }
+
+    match /eventParticipations/{id} {
+      allow get: if isAdmin() || (studentOk() && idEndsWithMe(id));
+      allow list: if isAdmin() || (studentOk() && resource.data.studentId == request.auth.uid);
+      allow create: if isAdmin() || evPartCreateOk(id);
+      allow update: if isAdmin() || evPartCompleteOk();
+      allow delete: if isAdmin();
+    }
+  }
+}
