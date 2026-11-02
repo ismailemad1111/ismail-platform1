@@ -8,6 +8,10 @@ import {
   tsToMs, toPlain,
   requireAdmin, getDocData, queryDocs, listAll, ref, countDocs, sumField, getDocsByIds
 } from "./core.js";
+import {
+  AI_PROVIDERS, AI_PROVIDER_IDS, ProviderError,
+  normalizeAiConfig, providerReadiness, callProvider
+} from "./ai.js";
 
 /** حذف مجموعة مستندات على دفعات (حد Firestore: 500 عملية) */
 async function deleteMany(name, ids) {
@@ -462,7 +466,153 @@ route("PATCH", "/api/admin/settings", async ({ body }) => {
   }
 
   await fs.setDoc(ref("settings", "general"), update, { merge: true });
+  // المفتاح العام للمساعد يبقى متزامنًا مع settings/ai.enabled
+  if (typeof body.aiEnabled === "boolean") {
+    await fs.setDoc(ref("settings", "ai"), { enabled: body.aiEnabled }, { merge: true });
+  }
   return ok({ updated: true });
+});
+
+/* ---------------- إدارة مزودي الذكاء الاصطناعي ---------------- */
+
+/** نسخة آمنة للواجهة: لا تحوي المفتاح، فقط hasApiKey وآخر 4 أحرف */
+function publicAiSettings(cfg, general) {
+  const providers = {};
+  for (const id of AI_PROVIDER_IDS) {
+    const p = cfg.providers[id];
+    providers[id] = {
+      label: AI_PROVIDERS[id].label,
+      enabled: p.enabled,
+      hasApiKey: !!p.apiKey,
+      keyHint: p.apiKey.length >= 12 ? p.apiKey.slice(-4) : "",
+      model: p.model,
+      maxOutputTokens: p.maxOutputTokens,
+      temperature: p.temperature
+    };
+  }
+  return {
+    enabled: cfg.enabled && !(general && general.aiEnabled === false),
+    defaultProvider: cfg.defaultProvider,
+    dailyLimit: cfg.dailyLimit,
+    providers
+  };
+}
+
+async function loadAiSettingsForAdmin() {
+  const [raw, general] = await Promise.all([getDocData("settings", "ai"), getDocData("settings", "general")]);
+  return { raw, general, cfg: normalizeAiConfig(raw) };
+}
+
+route("GET", "/api/admin/ai-settings", async () => {
+  requireAdmin();
+  const { cfg, general } = await loadAiSettingsForAdmin();
+  return ok({ settings: publicAiSettings(cfg, general) });
+});
+
+route("PATCH", "/api/admin/ai-settings", async ({ body }) => {
+  const admin = requireAdmin();
+  const { raw, general, cfg } = await loadAiSettingsForAdmin();
+  const update = { updatedAt: fs.serverTimestamp(), updatedBy: admin.id };
+
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== "boolean") bad("BAD_REQUEST", "قيمة التفعيل غير صحيحة.");
+    update.enabled = body.enabled;
+  }
+  if (body.defaultProvider !== undefined) {
+    const id = safeText(body.defaultProvider).toLowerCase();
+    if (!AI_PROVIDERS[id]) bad("BAD_REQUEST", "المزود الافتراضي غير مدعوم.");
+    update.defaultProvider = id;
+  }
+  if (body.dailyLimit !== undefined) {
+    const n = Number(body.dailyLimit);
+    if (!Number.isInteger(n) || n < 1 || n > 500) bad("BAD_REQUEST", "الحد اليومي يجب أن يكون بين 1 و500.");
+    update.dailyLimit = n;
+  }
+
+  const patch = body.providers;
+  if (patch !== undefined && (!patch || typeof patch !== "object" || Array.isArray(patch))) {
+    bad("BAD_REQUEST", "إعدادات المزودين غير صحيحة.");
+  }
+  // أول حفظ على مستند قديم: نكتب البنية الجديدة كاملة (مع مفتاح المزود القديم) ثم نحذف الحقول القديمة
+  const migrating = !cfg.migrated && !!raw;
+  const providersUpdate = {};
+  if (migrating) {
+    for (const id of AI_PROVIDER_IDS) providersUpdate[id] = { ...cfg.providers[id] };
+    update.defaultProvider = update.defaultProvider || cfg.defaultProvider;
+    update.dailyLimit = update.dailyLimit !== undefined ? update.dailyLimit : cfg.dailyLimit;
+    for (const k of ["provider", "model", "apiKey", "maxOutputTokens"]) update[k] = fs.deleteField();
+  }
+
+  for (const id of Object.keys(patch || {})) {
+    if (!AI_PROVIDERS[id]) bad("BAD_REQUEST", `مزود غير مدعوم: ${safeText(id).slice(0, 30)}`);
+    const p = patch[id];
+    if (!p || typeof p !== "object" || Array.isArray(p)) bad("BAD_REQUEST", "إعدادات المزود غير صحيحة.");
+    const out = providersUpdate[id] || (providersUpdate[id] = {});
+
+    if (p.enabled !== undefined) {
+      if (typeof p.enabled !== "boolean") bad("BAD_REQUEST", "قيمة تفعيل المزود غير صحيحة.");
+      out.enabled = p.enabled;
+    }
+    if (p.deleteApiKey !== undefined && p.deleteApiKey !== true) bad("BAD_REQUEST", "أمر حذف المفتاح غير صحيح.");
+    if (p.deleteApiKey === true && p.apiKey) bad("BAD_REQUEST", "لا يمكن حذف المفتاح وتعيينه في نفس الطلب.");
+    if (p.deleteApiKey === true) out.apiKey = "";
+    // مفتاح فارغ/غير مرسل = الإبقاء على المفتاح الحالي
+    if (typeof p.apiKey === "string" && p.apiKey.trim()) {
+      const key = p.apiKey.trim();
+      if (key.length < 10 || key.length > 512 || /\s/.test(key)) bad("BAD_REQUEST", "صيغة مفتاح API غير صحيحة.");
+      out.apiKey = key;
+    }
+    if (p.model !== undefined) {
+      const model = safeText(p.model);
+      if (!model || model.length > 100 || !/^[A-Za-z0-9._:\/-]+$/.test(model)) bad("BAD_REQUEST", "اسم النموذج غير صحيح.");
+      out.model = model;
+    }
+    if (p.maxOutputTokens !== undefined) {
+      const n = Number(p.maxOutputTokens);
+      if (!Number.isInteger(n) || n < 50 || n > 2000) bad("BAD_REQUEST", "عدد Tokens يجب أن يكون بين 50 و2000.");
+      out.maxOutputTokens = n;
+    }
+    if (p.temperature !== undefined) {
+      const n = Number(p.temperature);
+      if (p.temperature === "" || p.temperature === null || !Number.isFinite(n) || n < 0 || n > 2) bad("BAD_REQUEST", "Temperature يجب أن تكون بين 0 و2.");
+      out.temperature = n;
+    }
+  }
+  if (Object.keys(providersUpdate).length) update.providers = providersUpdate;
+
+  // تحديث جزئي (merge) — لا يستبدل المستند ولا يمس المفاتيح غير المذكورة
+  await fs.setDoc(ref("settings", "ai"), update, { merge: true });
+  if (typeof update.enabled === "boolean") {
+    await fs.setDoc(ref("settings", "general"), { aiEnabled: update.enabled, updatedAt: fs.serverTimestamp() }, { merge: true });
+  }
+
+  const fresh = await loadAiSettingsForAdmin();
+  return ok({ settings: publicAiSettings(fresh.cfg, fresh.general) });
+});
+
+route("POST", "/api/admin/ai-settings/test", async ({ body }) => {
+  requireAdmin();
+  const id = safeText(body.provider).toLowerCase();
+  if (!AI_PROVIDERS[id]) bad("BAD_REQUEST", "المزود غير مدعوم.");
+  const { cfg } = await loadAiSettingsForAdmin();
+  const conf = cfg.providers[id];
+
+  const notReady = providerReadiness(conf);
+  if (notReady) return ok({ result: { ok: false, kind: "not_ready", message: notReady, latencyMs: 0 } });
+
+  // طلب قصير جدًا. لا يمس aiUsage ولا المزود الافتراضي.
+  const t0 = Date.now();
+  try {
+    const out = await callProvider(id, {
+      ...conf, maxOutputTokens: 16, temperature: 0,
+      messages: [{ role: "user", content: "ping" }]
+    }, 20000);
+    return ok({ result: { ok: true, kind: "ok", message: "اتصال ناجح.", latencyMs: out.latencyMs, model: conf.model } });
+  } catch (e) {
+    const kind = e instanceof ProviderError ? e.kind : "network";
+    const message = e instanceof ProviderError ? e.message : "تعذّر إتمام الاختبار.";
+    return ok({ result: { ok: false, kind, message, latencyMs: Date.now() - t0, model: conf.model } });
+  }
 });
 
 /* ---------------- مجموعات الدروس ---------------- */
