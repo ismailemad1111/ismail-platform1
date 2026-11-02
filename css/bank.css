@@ -579,3 +579,167 @@ html.bk-lock { overflow: hidden; }
   .bk-card:hover, .bk-card:hover .bk-card-media img { transform: none; }
   .bk-overlay { backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
+
+
+/* ============================================================
+   إعادة التصميم: متجر الجوائز (Header / Wallet / بطاقات / تفاصيل / طلباتي)
+   ============================================================ */
+
+.bk-back {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.bk-back .icon { transform: scaleX(-1); font-size: 14px; }  /* في RTL يشير السهم إلى الرجوع */
+
+/* بطاقة المحفظة */
+.bk-balance-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; position: relative; z-index: 1; }
+.bk-balance-top .bk-balance-label { margin: 0; }
+.bk-hero-refresh,
+.bk-hero-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.bk-hero-stats {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  align-items: stretch;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+.bk-hero-stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.bk-hero-stat strong { font-family: var(--font-english); font-size: 20px; line-height: 1.2; direction: ltr; text-align: start; color: #fff; }
+.bk-hero-stat span { font-size: 11px; color: rgba(255, 255, 255, 0.65); }
+.bk-hero-link { align-self: center; }
+
+/* بطاقة المنتج */
+.bk-card { transition: border-color 0.2s ease, box-shadow 0.2s ease; }
+.bk-card.is-affordable { border-color: var(--color-green); }
+.bk-card.is-off .bk-card-media img { filter: grayscale(0.8); opacity: 0.7; }
+.bk-card-media { aspect-ratio: 4 / 3; }
+.bk-placeholder { display: flex; align-items: center; justify-content: center; width: 72px; height: 72px; border-radius: 50%; background: var(--color-surface); box-shadow: 0 1px 4px rgba(23, 25, 29, 0.08); }
+.bk-media-badge { position: absolute; inset-block-start: 10px; inset-inline-start: 10px; box-shadow: 0 1px 4px rgba(23, 25, 29, 0.12); }
+.bk-pricebox { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; min-width: 0; }
+.bk-price-line { margin: 0; font-size: 12px; line-height: 1.5; color: var(--color-text-muted); }
+.bk-price strong { font-family: var(--font-english); font-size: 20px; }
+.bk-card-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.bk-card-actions .bk-btn { min-height: 44px; width: 100%; justify-content: center; }
+
+.bk-filter-row { flex-wrap: wrap; }
+.bk-ledger-filters { margin-bottom: 12px; }
+
+/* نافذة التفاصيل */
+.bk-modal--detail { position: relative; }
+.bk-modal-close {
+  position: absolute;
+  inset-block-start: 12px;
+  inset-inline-end: 12px;
+  z-index: 2;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 0 1px 6px rgba(23, 25, 29, 0.18);
+  cursor: pointer;
+}
+.bk-detail-media { margin: -22px -20px 14px; }
+.bk-detail-img {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-soft);
+  color: var(--color-primary-dark);
+  font-size: 48px;
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  overflow: hidden;
+}
+.bk-detail-img img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.bk-detail-desc { margin: 0 0 14px; font-size: 14px; line-height: 1.9; color: var(--color-text-muted); white-space: pre-line; overflow-wrap: anywhere; }
+@media (min-width: 620px) { .bk-detail-media { margin: -22px -20px 14px; } }
+.bk-modal-actions .bk-btn { min-height: 46px; }
+
+/* طلباتي */
+.bk-order {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+.bk-order--rejected { border-color: var(--color-red); }
+.bk-order-head { display: flex; align-items: center; gap: 10px; }
+.bk-order-thumb {
+  position: relative;
+  flex-shrink: 0;
+  width: 52px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-soft);
+  color: var(--color-primary-dark);
+  font-size: 22px;
+}
+.bk-order-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.bk-order-thumb .bk-placeholder { width: 100%; height: 100%; border-radius: 0; background: none; box-shadow: none; }
+.bk-order-main { flex: 1; min-width: 0; }
+.bk-order-name { margin: 0; font-size: 15px; line-height: 1.4; color: var(--color-text); overflow-wrap: anywhere; }
+.bk-summary--sm { margin: 0; padding: 10px 12px; gap: 6px; }
+.bk-summary--sm .bk-summary-row { font-size: 13px; }
+.bk-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.bk-step { position: relative; padding-top: 14px; text-align: center; font-size: 11px; line-height: 1.5; color: var(--color-text-muted); }
+.bk-step::before { content: ""; position: absolute; inset-block-start: 0; inset-inline: 0; height: 5px; border-radius: 3px; background: var(--color-border); }
+.bk-step.is-done { color: var(--color-text); font-weight: 600; }
+.bk-step.is-done::before { background: var(--color-green); }
+.bk-step.is-current { font-weight: 700; }
+.bk-steps.is-rejected .bk-step::before { background: var(--color-red-light); }
+.bk-order-reject { margin: 0; font-size: 13px; line-height: 1.8; color: var(--color-red-dark); overflow-wrap: anywhere; }
+.bk-order-refund { margin: 0; font-size: 13px; font-weight: 700; color: var(--color-green-dark); }
+.bk-more { width: 100%; margin-top: 12px; min-height: 46px; justify-content: center; }
+.bk-more[hidden] { display: none; }
+
+/* هاتف صغير: لا تمدد أفقي ولا قص */
+.bk-card-name, .bk-card-desc, .bk-row-title, .bk-row-sub { overflow-wrap: anywhere; }
+@media (max-width: 380px) {
+  .bk-balance-value { font-size: 36px; }
+  .bk-hero-stats { grid-template-columns: 1fr 1fr; }
+  .bk-hero-link { grid-column: 1 / -1; justify-content: center; }
+  .bk-card-actions { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { .bk-card, .bk-modal, .bk-overlay { transition: none; } }
