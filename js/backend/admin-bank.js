@@ -14,8 +14,23 @@ import {
   requireAdmin, getDocData, listAll, queryDocs, ref
 } from "./core.js";
 import {
-  KEY_PATTERN, ID_PATTERN, ORDER_STATUS_LABELS, ORDER_TRANSITIONS
+  KEY_PATTERN, ID_PATTERN, ORDER_STATUS_LABELS, ORDER_TRANSITIONS, normalizeTax, calcPricing
 } from "./bank.js";
+
+/* مؤشرات ترقيم الطلبات (آخر مستند لكل صفحة) */
+const ORDER_CURSORS = new Map();
+
+/** حقول الطلب المالية التاريخية؛ الطلبات القديمة بلا ضريبة: الأساسي = المدفوع والضريبة صفر */
+function orderMoney(o) {
+  const price = Number(o.price) || 0;
+  const hasBase = o.basePrice !== undefined && o.basePrice !== null && Number.isFinite(Number(o.basePrice));
+  return {
+    price,
+    basePrice: hasBase ? Number(o.basePrice) : price,
+    taxRate: Number(o.taxRate) || 0,
+    taxAmount: Number(o.taxAmount) || 0
+  };
+}
 
 const MAX_AMOUNT = 1000000;
 const MAX_IMAGE_CHARS = 250000;
@@ -106,8 +121,39 @@ function adminReward(d) {
 
 route("GET", "/api/admin/bank/rewards", async () => {
   requireAdmin();
-  const rows = await listAll("bankRewards");
-  return ok(toPlain({ rewards: rows.map(adminReward).sort(byCreatedDesc) }));
+  const [rows, taxDoc] = await Promise.all([listAll("bankRewards"), getDocData("settings", "bank")]);
+  const tax = normalizeTax(taxDoc);
+  const rewards = rows.map((d) => {
+    const r = adminReward(d);
+    const pr = calcPricing(r.price, tax);
+    return { ...r, taxAmount: pr.taxAmount, finalPrice: pr.finalPrice };
+  }).sort(byCreatedDesc);
+  return ok(toPlain({ rewards, tax }));
+});
+
+/* إحصائيات حقيقية للوحة المعلومات (قراءة تجميعية بلا تحميل كل المستندات حيث أمكن) */
+route("GET", "/api/admin/bank/stats", async () => {
+  requireAdmin();
+  const [rewards, orders, wallets, txs] = await Promise.all([
+    listAll("bankRewards"), listAll("bankOrders"), listAll("bankWallets"),
+    queryDocs("bankTransactions", fs.where("type", "in", ["purchase", "refund"]))
+  ]);
+  const rw = rewards.filter((r) => r._placeholder !== true);
+  const od = orders.filter((o) => o._placeholder !== true);
+  const cnt = (st) => od.filter((o) => o.status === st).length;
+  const sum = (arr, f) => arr.reduce((a, x) => a + (Number(f(x)) || 0), 0);
+  return ok({
+    rewardsTotal: rw.length,
+    rewardsPublished: rw.filter((r) => r.published === true).length,
+    rewardsHidden: rw.filter((r) => r.published !== true).length,
+    ordersNew: cnt("pending"),
+    ordersPending: cnt("pending") + cnt("accepted") + cnt("ready"),
+    ordersDone: cnt("delivered"),
+    ordersRejected: cnt("rejected"),
+    walletsTotal: sum(wallets.filter((w) => w._placeholder !== true), (w) => w.balance),
+    purchasesTotal: sum(txs.filter((t) => t.type === "purchase"), (t) => -Number(t.amount)),
+    refundsTotal: sum(txs.filter((t) => t.type === "refund"), (t) => t.amount)
+  });
 });
 
 route("POST", "/api/admin/bank/rewards", async ({ body }) => {
@@ -270,10 +316,9 @@ route("POST", "/api/admin/bank/students/:id/adjust", async ({ params, body }) =>
 
 /* ---------------- الطلبات ---------------- */
 
-route("GET", "/api/admin/bank/orders", async () => {
-  requireAdmin();
-  const rows = await listAll("bankOrders");
-  const orders = rows.sort(byCreatedDesc).map((o) => ({
+function mapOrder(o) {
+  const m = orderMoney(o);
+  return {
     id: o.id,
     studentId: safeText(o.studentId),
     studentName: safeText(o.studentName),
@@ -281,17 +326,52 @@ route("GET", "/api/admin/bank/orders", async () => {
     stage: safeText(o.stage),
     rewardId: safeText(o.rewardId),
     rewardName: safeText(o.rewardName),
-    price: Number(o.price) || 0,
+    ...m,
     status: safeText(o.status),
     balanceBefore: Number(o.balanceBefore) || 0,
     balanceAfter: Number(o.balanceAfter) || 0,
     rejectReason: safeText(o.rejectReason),
+    refunded: !!o.refundTxId,
     note: safeText(o.adminNote),
     createdAt: o.createdAt || null,
     updatedAt: o.updatedAt || null,
-    deliveredAt: o.deliveredAt || null
-  }));
-  return ok(toPlain({ orders }));
+    acceptedAt: o.acceptedAt || null,
+    readyAt: o.readyAt || null,
+    deliveredAt: o.deliveredAt || null,
+    rejectedAt: o.rejectedAt || null
+  };
+}
+
+/** ?limit=N&cursor=id → صفحة واحدة (الأحدث أولًا). بدون limit: السلوك القديم (الكل) */
+route("GET", "/api/admin/bank/orders", async ({ query }) => {
+  requireAdmin();
+  const limitN = Math.min(Math.max(parseInt(query && query.limit, 10) || 0, 0), 100);
+  const cursor = safeText(query && query.cursor);
+  if (limitN > 0) {
+    try {
+      if (!cursor) ORDER_CURSORS.clear();
+      const cons = [fs.orderBy("createdAt", "desc")];
+      if (cursor) {
+        const snap = ORDER_CURSORS.get(cursor) || await fs.getDoc(ref("bankOrders", cursor));
+        if (!snap.exists()) bad("BAD_REQUEST", "تعذر متابعة التحميل. حدّث الصفحة.");
+        cons.push(fs.startAfter(snap));
+      }
+      cons.push(fs.limit(limitN + 1));
+      const snaps = (await fs.getDocs(fs.query(col("bankOrders"), ...cons))).docs;
+      const hasMore = snaps.length > limitN;
+      const page = snaps.slice(0, limitN);
+      if (page.length) ORDER_CURSORS.set(page[page.length - 1].id, page[page.length - 1]);
+      const orders = page.map((d) => ({ id: d.id, ...d.data() })).filter((d) => d._placeholder !== true).map(mapOrder);
+      return ok(toPlain({
+        orders, paged: true, hasMore,
+        nextCursor: hasMore && page.length ? page[page.length - 1].id : null
+      }));
+    } catch (err) {
+      if (!(err && err.code === "failed-precondition")) throw err;
+    }
+  }
+  const rows = await listAll("bankOrders");
+  return ok(toPlain({ orders: rows.filter((o) => o._placeholder !== true).sort(byCreatedDesc).map(mapOrder) }));
 });
 
 /**
@@ -391,6 +471,8 @@ route("PATCH", "/api/admin/bank/orders/:id/status", async ({ params, body }) => 
       reason: `استرجاع طلب مرفوض (${safeText(o.rewardName)}): ${reason}`,
       orderId,
       rewardId: safeText(o.rewardId),
+      basePrice: orderMoney(o).basePrice,
+      taxAmount: orderMoney(o).taxAmount,
       adminId: admin.id,
       adminName: admin.name || admin.email || "",
       createdAt: fs.serverTimestamp()
