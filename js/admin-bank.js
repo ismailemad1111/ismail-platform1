@@ -73,8 +73,7 @@ const state = {
   ordersCursor: null, ordersHasMore: false, ordersBusy: false,
   loaded: { rewards: false, wallets: false, orders: false, bans: false },
   tab: "dashboard",
-  selectedStudent: null,
-  statsBusy: false
+  selectedStudent: null
 };
 
 /* ============================================================
@@ -141,74 +140,25 @@ function updateBadges() {
 
 async function loadStats() {
   const btnEl = $("abkStatsRefresh");
-  const errorEl = $("abkStatsError");
-  // Avoid duplicate concurrent requests (e.g. initial load + dashboard tab click).
-  if (state.statsBusy) return;
-  state.statsBusy = true;
-  if (btnEl) {
-    btnEl.disabled = true;
-    btnEl.setAttribute("aria-busy", "true");
+  btnEl.disabled = true;
+  const [res, cfg] = await Promise.all([api("/api/admin/bank/stats"), api("/api/admin/bank/settings")]);
+  btnEl.disabled = false;
+  if (cfg && cfg.success) {
+    const t = cfg.data.settings;
+    state.tax = { enabled: !!t.taxEnabled, rate: Number(t.taxRate) || 0 };
   }
-  if (errorEl) show(errorEl, false);
-
-  try {
-    // Stats and tax settings are independent: failure of either must not block
-    // the other or prevent the rest of the admin page from initializing.
-    const results = await Promise.allSettled([
-      api("/api/admin/bank/stats"),
-      api("/api/admin/bank/settings")
-    ]);
-    const statsResult = results[0];
-    const settingsResult = results[1];
-
-    if (settingsResult.status === "fulfilled") {
-      const cfg = settingsResult.value;
-      if (cfg && cfg.success && cfg.data && cfg.data.settings) {
-        const t = cfg.data.settings;
-        state.tax = { enabled: !!t.taxEnabled, rate: Number(t.taxRate) || 0 };
-      }
-    }
-
-    const taxLine = $("abkTaxLine");
-    if (taxLine) {
-      taxLine.textContent = state.tax.enabled
-        ? `الضريبة مفعّلة: ${fmtNum(state.tax.rate)}% على الطلبات الجديدة (من الإعدادات)`
-        : "الضريبة معطلة — الأسعار المعروضة نهائية (يمكن تفعيلها من الإعدادات)";
-    }
-
-    if (statsResult.status !== "fulfilled" || !statsResult.value || !statsResult.value.success) {
-      if (errorEl) show(errorEl, true);
-      return false;
-    }
-
-    const d = statsResult.value.data || {};
-    state.stats = d;
-    const set = (id, v) => {
-      const node = $(id);
-      if (node) node.textContent = fmtNum(v);
-    };
-    set("stRewardsTotal", d.rewardsTotal);
-    set("stRewardsPublished", d.rewardsPublished);
-    set("stRewardsHidden", d.rewardsHidden);
-    set("stOrdersNew", d.ordersNew);
-    set("stOrdersPending", d.ordersPending);
-    set("stOrdersDone", d.ordersDone);
-    set("stWallets", d.walletsTotal);
-    set("stPurchases", d.purchasesTotal);
-    set("stRefunds", d.refundsTotal);
-    updateBadges();
-    return true;
-  } catch (error) {
-    console.error("[admin-bank] Failed to load dashboard stats:", error);
-    if (errorEl) show(errorEl, true);
-    return false;
-  } finally {
-    state.statsBusy = false;
-    if (btnEl) {
-      btnEl.disabled = false;
-      btnEl.removeAttribute("aria-busy");
-    }
-  }
+  $("abkTaxLine").textContent = state.tax.enabled
+    ? `الضريبة مفعّلة: ${fmtNum(state.tax.rate)}% على الطلبات الجديدة (من الإعدادات)`
+    : "الضريبة معطلة — الأسعار المعروضة نهائية (يمكن تفعيلها من الإعدادات)";
+  if (!res || !res.success) { show($("abkStatsError"), true); return; }
+  show($("abkStatsError"), false);
+  const d = res.data;
+  state.stats = d;
+  const set = (id, v) => { $(id).textContent = fmtNum(v); };
+  set("stRewardsTotal", d.rewardsTotal); set("stRewardsPublished", d.rewardsPublished); set("stRewardsHidden", d.rewardsHidden);
+  set("stOrdersNew", d.ordersNew); set("stOrdersPending", d.ordersPending); set("stOrdersDone", d.ordersDone);
+  set("stWallets", d.walletsTotal); set("stPurchases", d.purchasesTotal); set("stRefunds", d.refundsTotal);
+  updateBadges();
 }
 
 async function loadMoreOrders() {
@@ -764,16 +714,10 @@ function bindEvents() {
 async function init() {
   const session = requireAdmin();
   if (!session) return;
-
-  // Bind interactions first. Dashboard statistics are secondary and must never
-  // hold up the rewards/bans sections or the rest of the admin interface.
   bindEvents();
-
-  // Start independent requests without awaiting the dashboard endpoint.
-  // A stats/settings outage therefore cannot leave the bank page stuck loading.
-  void loadStats();
-  void load("rewards");
-  void load("bans");
+  await loadStats();
+  // تحميل هادئ للجوائز (تحمل إعداد الضريبة) والطلبات والمنع لشارات العدد
+  load("rewards"); load("bans");
 }
 
 onReady(init);
