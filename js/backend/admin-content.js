@@ -449,6 +449,44 @@ route("GET", "/api/admin/settings", async () => {
   });
 });
 
+/* ---------------- إعدادات بنك مستر إسماعيل (الضريبة الاختيارية) ----------------
+   settings/bank: { taxEnabled, taxRate } — معطلة افتراضيًا. الكتابة للأدمن فقط (قواعد Firestore). */
+
+const BANK_MAX_TAX = 50;
+
+route("GET", "/api/admin/bank/settings", async () => {
+  requireAdmin();
+  const d = await getDocData("settings", "bank");
+  const rate = d ? Number(d.taxRate) : 0;
+  return ok({
+    settings: {
+      taxEnabled: !!d && d.taxEnabled === true,
+      taxRate: Number.isFinite(rate) && rate >= 0 && rate <= BANK_MAX_TAX ? rate : 0,
+      maxTaxRate: BANK_MAX_TAX
+    }
+  });
+});
+
+route("PATCH", "/api/admin/bank/settings", async ({ body }) => {
+  const admin = requireAdmin();
+  if (typeof body.taxEnabled !== "boolean") bad("BAD_REQUEST", "حالة الضريبة غير صحيحة.");
+  const raw = body.taxRate;
+  const rate = typeof raw === "number" ? raw
+    : (typeof raw === "string" && /^\d{1,3}(\.\d{1,2})?$/.test(raw.trim()) ? Number(raw) : NaN);
+  const twoDecimals = Number.isFinite(rate) && Math.abs(rate * 100 - Math.round(rate * 100)) < 1e-9;
+  if (!twoDecimals || rate < 0 || rate > BANK_MAX_TAX) {
+    bad("BAD_REQUEST", `نسبة الضريبة يجب أن تكون رقمًا من 0 إلى ${BANK_MAX_TAX} (بحد أقصى خانتين عشريتين).`);
+  }
+  if (body.taxEnabled && rate <= 0) bad("BAD_REQUEST", "حدّد نسبة أكبر من صفر لتفعيل الضريبة.");
+  await fs.setDoc(ref("settings", "bank"), {
+    taxEnabled: body.taxEnabled,
+    taxRate: rate,
+    updatedAt: fs.serverTimestamp(),
+    updatedBy: admin.id
+  }, { merge: true });
+  return ok({ updated: true });
+});
+
 route("PATCH", "/api/admin/settings", async ({ body }) => {
   requireAdmin();
   const update = { updatedAt: fs.serverTimestamp() };
