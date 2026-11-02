@@ -432,3 +432,34 @@
 .abk-img-preview[hidden] { display: none; }
 .abk-error { margin: 0 0 12px; padding: 10px 12px; border-radius: 10px; background: var(--color-red-light); color: var(--color-red-dark); font-size: 13px; font-weight: 600; line-height: 1.7; }
 .abk-error[hidden] { display: none; }
+
+
+/* ============================================================
+   لوحة المعلومات + تفاصيل الطلب + المعاينات
+   ============================================================ */
+.abk-tax-line { flex: 1 1 220px; margin: 0; font-size: 13px; font-weight: 600; line-height: 1.7; color: var(--color-text-muted); }
+.abk-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+@media (min-width: 700px) { .abk-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.abk-stat { display: flex; flex-direction: column; gap: 4px; padding: 14px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); min-width: 0; }
+.abk-stat strong { font-family: var(--font-english); font-size: 24px; line-height: 1.2; direction: ltr; text-align: start; color: var(--color-text); overflow-wrap: anywhere; }
+.abk-stat span { font-size: 12px; font-weight: 600; color: var(--color-text-muted); }
+.abk-stat.is-hot { border-color: var(--color-yellow); background: var(--color-yellow-light); }
+.abk-more { width: 100%; min-height: 46px; margin-top: 12px; }
+.abk-more[hidden] { display: none; }
+
+.abk-pricepreview { margin: 0 0 12px; padding: 10px 12px; border-radius: var(--radius-md); background: var(--color-surface-soft); font-size: 13px; font-weight: 600; line-height: 1.8; overflow-wrap: anywhere; }
+.abk-studentview { margin: 4px 0 14px; }
+.abk-studentview-label { margin: 0 0 6px; font-size: 12px; font-weight: 700; color: var(--color-text-muted); }
+.abk-studentview-card { display: flex; gap: 10px; align-items: center; padding: 10px; border: 1px dashed var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-surface); }
+.abk-studentview-img { position: relative; flex-shrink: 0; width: 64px; height: 64px; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: var(--radius-md); background: var(--color-surface-soft); color: var(--color-primary-dark); font-size: 26px; }
+.abk-studentview-img img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.abk-studentview-body { min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.abk-studentview-body strong, .abk-studentview-body span { overflow-wrap: anywhere; }
+.abk-studentview-body span { color: var(--color-text-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.abk-studentview-body b { font-family: var(--font-english); color: var(--color-yellow-dark); }
+
+.abk-detail-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; padding: 12px 14px; border-radius: var(--radius-md); background: var(--color-surface-soft); }
+.abk-detail-row { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.abk-detail-row span { color: var(--color-text-muted); flex-shrink: 0; }
+.abk-detail-row strong { text-align: end; overflow-wrap: anywhere; }
+.abk-row-title, .abk-row-sub { overflow-wrap: anywhere; }
