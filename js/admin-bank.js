@@ -11,6 +11,7 @@
 import { onReady, showToast, formatDate, debounce } from "./helpers.js";
 import { requireAdmin } from "./router.js";
 import { backendRequest } from "./backend/index.js";
+import { calcPricing } from "./backend/bank.js";
 
 const ORDER_STATUS = {
   pending:   { label: "قيد المراجعة", cls: "abk-chip--warn" },
@@ -64,10 +65,14 @@ function failMsg(res, fallback) {
   return (res && res.error && res.error.message) || fallback;
 }
 
+const ORDERS_PAGE = 30;
+
 const state = {
   rewards: [], students: [], orders: [], bans: [],
+  tax: { enabled: false, rate: 0 },
+  ordersCursor: null, ordersHasMore: false, ordersBusy: false,
   loaded: { rewards: false, wallets: false, orders: false, bans: false },
-  tab: "rewards",
+  tab: "dashboard",
   selectedStudent: null
 };
 
@@ -89,7 +94,7 @@ async function load(name) {
   const endpoint = {
     rewards: "/api/admin/bank/rewards",
     wallets: "/api/admin/bank/students",
-    orders: "/api/admin/bank/orders",
+    orders: `/api/admin/bank/orders?limit=${ORDERS_PAGE}`,
     bans: "/api/admin/bank/bans"
   }[name];
   if (!state.loaded[name]) panelState(name, "loading");
@@ -99,9 +104,16 @@ async function load(name) {
     showToast(failMsg(res, "تعذر تحميل البيانات."), "error");
     return false;
   }
-  if (name === "rewards") state.rewards = res.data.rewards;
+  if (name === "rewards") {
+    state.rewards = res.data.rewards;
+    if (res.data.tax) state.tax = res.data.tax;
+  }
   if (name === "wallets") state.students = res.data.students;
-  if (name === "orders") state.orders = res.data.orders;
+  if (name === "orders") {
+    state.orders = res.data.orders;
+    state.ordersHasMore = !!res.data.hasMore;
+    state.ordersCursor = res.data.nextCursor || null;
+  }
   if (name === "bans") state.bans = res.data.bans;
   state.loaded[name] = true;
   render(name);
@@ -116,10 +128,52 @@ function render(name) {
 }
 
 function updateBadges() {
-  const pending = state.orders.filter((o) => o.status === "pending").length;
+  const pending = state.stats ? state.stats.ordersNew : state.orders.filter((o) => o.status === "pending").length;
   const act = state.bans.filter((b) => b.state === "active").length;
   $("abkOrdersCount").textContent = String(pending); show($("abkOrdersCount"), pending > 0);
   $("abkBansCount").textContent = String(act); show($("abkBansCount"), act > 0);
+}
+
+/* ============================================================
+   نظرة عامة (إحصائيات حقيقية من قاعدة البيانات)
+   ============================================================ */
+
+async function loadStats() {
+  const btnEl = $("abkStatsRefresh");
+  btnEl.disabled = true;
+  const [res, cfg] = await Promise.all([api("/api/admin/bank/stats"), api("/api/admin/bank/settings")]);
+  btnEl.disabled = false;
+  if (cfg && cfg.success) {
+    const t = cfg.data.settings;
+    state.tax = { enabled: !!t.taxEnabled, rate: Number(t.taxRate) || 0 };
+  }
+  $("abkTaxLine").textContent = state.tax.enabled
+    ? `الضريبة مفعّلة: ${fmtNum(state.tax.rate)}% على الطلبات الجديدة (من الإعدادات)`
+    : "الضريبة معطلة — الأسعار المعروضة نهائية (يمكن تفعيلها من الإعدادات)";
+  if (!res || !res.success) { show($("abkStatsError"), true); return; }
+  show($("abkStatsError"), false);
+  const d = res.data;
+  state.stats = d;
+  const set = (id, v) => { $(id).textContent = fmtNum(v); };
+  set("stRewardsTotal", d.rewardsTotal); set("stRewardsPublished", d.rewardsPublished); set("stRewardsHidden", d.rewardsHidden);
+  set("stOrdersNew", d.ordersNew); set("stOrdersPending", d.ordersPending); set("stOrdersDone", d.ordersDone);
+  set("stWallets", d.walletsTotal); set("stPurchases", d.purchasesTotal); set("stRefunds", d.refundsTotal);
+  updateBadges();
+}
+
+async function loadMoreOrders() {
+  if (state.ordersBusy || !state.ordersHasMore || !state.ordersCursor) return;
+  state.ordersBusy = true;
+  $("abkOrdersMore").disabled = true;
+  const res = await api(`/api/admin/bank/orders?limit=${ORDERS_PAGE}&cursor=${encodeURIComponent(state.ordersCursor)}`);
+  state.ordersBusy = false;
+  $("abkOrdersMore").disabled = false;
+  if (!res || !res.success) { showToast(failMsg(res, "تعذر تحميل المزيد."), "error"); return; }
+  const seen = new Set(state.orders.map((o) => o.id));
+  state.orders = state.orders.concat(res.data.orders.filter((o) => !seen.has(o.id)));
+  state.ordersHasMore = !!res.data.hasMore;
+  state.ordersCursor = res.data.nextCursor || null;
+  renderOrders();
 }
 
 /* ============================================================
@@ -142,6 +196,7 @@ function renderRewards() {
 
     const chips = el("div", { class: "abk-chips" }, [
       chip(`${fmtNum(r.price)} فلوس`, "abk-chip--warn"),
+      state.tax.enabled && r.taxAmount > 0 ? chip(`النهائي: ${fmtNum(r.finalPrice)} (ضريبة ${fmtNum(r.taxAmount)})`, "abk-chip--info") : null,
       chip(r.published ? "منشورة" : "مخفية", r.published ? "abk-chip--ok" : ""),
       chip(r.requestable ? "متاحة للطلب" : "غير متاحة للطلب", r.requestable ? "abk-chip--info" : ""),
       chip(r.limited ? `المتبقي: ${fmtNum(r.stock)}` : "كمية مفتوحة", r.limited && r.stock === 0 ? "abk-chip--bad" : "")
@@ -192,15 +247,35 @@ function openReward(r) {
   setImage(r ? r.imageUrl : "");
   show($("abkRewardError"), false);
   $("abkRSave").disabled = false; $("abkRSave").textContent = "حفظ";
+  updateRewardPreview();
   setOverlay("abkRewardOverlay", true);
   $("abkRName").focus();
 }
+function updateRewardPreview() {
+  const price = Number($("abkRPrice").value);
+  const valid = Number.isInteger(price) && price >= 1;
+  const pr = calcPricing(valid ? price : 0, state.tax);
+  $("abkRPricePreview").textContent = !valid
+    ? "أدخل السعر الأساسي لعرض السعر النهائي للطالب."
+    : (state.tax.enabled
+      ? `السعر الأساسي: ${fmtNum(pr.basePrice)} — الضريبة (${fmtNum(state.tax.rate)}%): ${fmtNum(pr.taxAmount)} — الإجمالي: ${fmtNum(pr.finalPrice)}`
+      : `الضريبة معطلة — السعر النهائي للطالب: ${fmtNum(pr.finalPrice)}`);
+  $("abkRViewName").textContent = $("abkRName").value.trim() || "اسم الجائزة";
+  $("abkRViewDesc").textContent = $("abkRDesc").value.trim();
+  $("abkRViewPrice").textContent = valid ? `${fmtNum(pr.finalPrice)} فلوس` : "";
+  const box = $("abkRViewImg");
+  box.replaceChildren();
+  if (imageData) box.appendChild(el("img", { attrs: { src: imageData, alt: "" } }));
+  else box.appendChild(el("span", { class: "icon icon-trophy", attrs: { "aria-hidden": "true" } }));
+}
+
 function setImage(data) {
   imageData = data || "";
   const p = $("abkRPreview");
   if (imageData) p.src = imageData; else p.removeAttribute("src");
   show(p, !!imageData);
   show($("abkRImageClear"), !!imageData);
+  updateRewardPreview();
 }
 
 /** يصغّر الصورة ويحوّلها إلى JPEG data URL ضمن الحد المسموح */
@@ -354,11 +429,24 @@ function openAdjust(type) {
   $("abkAdjustTitle").textContent = type === "credit" ? "إضافة رصيد" : "خصم رصيد";
   $("abkAdjustSub").textContent = `${s.fullName} — الرصيد الحالي ${$("abkDetailBalance").textContent}`;
   $("abkAAmount").value = ""; $("abkAReason").value = "";
+  updateAdjustPreview();
   show($("abkAdjustError"), false);
   $("abkAConfirm").disabled = false; $("abkAConfirm").textContent = "تأكيد";
   setOverlay("abkAdjustOverlay", true);
   $("abkAAmount").focus();
 }
+function updateAdjustPreview() {
+  if (!adjust || !state.selectedStudent) return;
+  const cur = Number(state.selectedStudent.balance) || 0;
+  const amt = Number($("abkAAmount").value);
+  const box = $("abkAPreview");
+  if (!Number.isInteger(amt) || amt < 1) { box.textContent = `الرصيد الحالي: ${fmtNum(cur)}`; return; }
+  const after = adjust.type === "credit" ? cur + amt : cur - amt;
+  box.textContent = after < 0
+    ? `الرصيد الحالي ${fmtNum(cur)} لا يكفي لخصم ${fmtNum(amt)}.`
+    : `الرصيد الحالي: ${fmtNum(cur)} ← بعد العملية: ${fmtNum(after)}`;
+}
+
 async function confirmAdjust() {
   if (!adjust || adjust.busy) return;
   const s = state.selectedStudent;
@@ -432,6 +520,12 @@ async function confirmReason() {
    الطلبات
    ============================================================ */
 
+function orderMoneyText(o) {
+  return Number(o.taxAmount) > 0
+    ? `${fmtNum(o.basePrice)} + ضريبة ${fmtNum(o.taxAmount)} = ${fmtNum(o.price)}`
+    : `${fmtNum(o.price)}`;
+}
+
 function renderOrders() {
   const f = $("abkOrderFilter").value;
   const q = $("abkOrderSearch").value.trim();
@@ -440,21 +534,24 @@ function renderOrders() {
     (!q || o.studentName.includes(q) || o.rewardName.includes(q) || o.studentCode.includes(q)));
   const list = $("abkOrdersList");
   list.replaceChildren();
-  if (!rows.length) { panelState("orders", "empty"); return; }
+  show($("abkOrdersMore"), state.ordersHasMore);
+  if (!rows.length) { panelState("orders", "empty"); show($("abkOrdersMore"), state.ordersHasMore); return; }
   rows.forEach((o) => {
     const st = ORDER_STATUS[o.status] || { label: o.status, cls: "" };
     const actions = el("div", { class: "abk-actions" });
+    actions.appendChild(btn("التفاصيل", "", () => openOrderDetails(o)));
     (NEXT_ACTIONS[o.status] || []).forEach(([to, label]) => {
       actions.appendChild(btn(label, to === "rejected" ? "abk-btn--danger" : (to === "accepted" ? "abk-btn--primary" : ""),
         () => changeStatus(o, to)));
     });
-    let sub = `${o.studentName} (كود ${o.studentCode || "—"}) — ${formatDate(o.createdAt)} — الرصيد: ${fmtNum(o.balanceBefore)} ← ${fmtNum(o.balanceAfter)}`;
-    if (o.status === "rejected") sub += ` — سبب الرفض: ${o.rejectReason} (تم الاسترجاع)`;
+    let sub = `${o.studentName} (كود ${o.studentCode || "—"}) — ${formatDate(o.createdAt)}`;
+    if (o.status === "rejected") sub += ` — سبب الرفض: ${o.rejectReason}${o.refunded ? " (تم الاسترجاع)" : ""}`;
     if (o.status === "delivered" && o.deliveredAt) sub += ` — سُلّمت في ${formatDate(o.deliveredAt)}`;
     list.appendChild(el("div", { class: "abk-row" }, [
       el("div", { class: "abk-row-main" }, [
         el("p", { class: "abk-row-title", text: o.rewardName }),
         el("p", { class: "abk-row-sub", text: sub }),
+        el("p", { class: "abk-row-sub", text: `المدفوع: ${orderMoneyText(o)}` }),
         actions
       ]),
       el("div", { class: "abk-row-side" }, [
@@ -466,11 +563,36 @@ function renderOrders() {
   panelState("orders", "list");
 }
 
+/* تفاصيل الطلب: القيم المالية المحفوظة وقت الطلب (لا إعادة حساب بالنسبة الحالية) */
+function openOrderDetails(o) {
+  const st = ORDER_STATUS[o.status] || { label: o.status, cls: "" };
+  $("abkOrderTitle").textContent = o.rewardName;
+  $("abkOrderSub").textContent = `${o.studentName} (كود ${o.studentCode || "—"}) — ${formatDate(o.createdAt)}`;
+  const row = (k, v) => el("div", { class: "abk-detail-row" }, [el("span", { text: k }), el("strong", { text: v })]);
+  const rows = [
+    row("رقم الطلب", String(o.id).split("_").pop().slice(-8).toUpperCase()),
+    row("الحالة", st.label),
+    row("السعر الأساسي", fmtNum(o.basePrice)),
+    row("نسبة الضريبة", `${fmtNum(o.taxRate)}%`),
+    row("قيمة الضريبة", fmtNum(o.taxAmount)),
+    row("السعر النهائي المدفوع", fmtNum(o.price)),
+    row("رصيد الطالب قبل → بعد", `${fmtNum(o.balanceBefore)} ← ${fmtNum(o.balanceAfter)}`)
+  ];
+  if (o.status === "rejected") {
+    rows.push(row("سبب الرفض", o.rejectReason || "—"));
+    rows.push(row("الاسترجاع", o.refunded ? `تم استرجاع ${fmtNum(o.price)}` : "—"));
+  }
+  if (o.deliveredAt) rows.push(row("تاريخ التسليم", formatDate(o.deliveredAt)));
+  if (o.note) rows.push(row("ملاحظة", o.note));
+  $("abkOrderBody").replaceChildren(...rows);
+  setOverlay("abkOrderOverlay", true);
+}
+
 async function changeStatus(order, to) {
   if (to === "rejected") {
     askReason({
       title: "رفض الطلب",
-      sub: `سيُسترجع ${fmtNum(order.price)} فلوس إلى رصيد ${order.studentName} تلقائيًا وتعود الكمية للمخزون. لا يمكن التراجع عن الرفض.`,
+      sub: `سيُسترجع المبلغ النهائي المدفوع (${fmtNum(order.price)} فلوس) إلى رصيد ${order.studentName} تلقائيًا وتعود الكمية للمخزون. لا يمكن التراجع عن الرفض.`,
       confirmLabel: "رفض واسترجاع",
       run: async (reason) => {
         const res = await api(`/api/admin/bank/orders/${encodeURIComponent(order.id)}/status`, { method: "PATCH", body: { status: "rejected", reason } });
@@ -484,8 +606,10 @@ async function changeStatus(order, to) {
   if (!res.success) { showToast(failMsg(res, "تعذر تغيير الحالة."), "error"); await load("orders"); return; }
   showToast(`تم تغيير الحالة إلى «${ORDER_STATUS[to].label}» ✅`, "success");
   await load("orders");
+  loadStats();
 }
 async function refreshOrdersAndRewards() {
+  loadStats();
   await Promise.all([load("orders"), state.loaded.rewards ? load("rewards") : null, state.loaded.wallets ? load("wallets") : null]);
 }
 
@@ -503,6 +627,8 @@ function renderBans() {
     const st = BAN_STATE[b.state] || BAN_STATE.expired;
     let sub = `السبب: رصيد غير كافٍ عند طلب «${b.rewardName}» (${fmtNum(b.price)}) برصيد ${fmtNum(b.balanceAtAttempt)} — ` +
       `من ${formatDate(b.startsAt)} إلى ${formatDate(b.endsAt)}`;
+    const days = Math.round((new Date(b.endsAt) - new Date(b.startsAt)) / 86400000);
+    if (days > 0) sub += ` (مدة المنع ${fmtNum(days)} يومًا)`;
     if (b.state === "lifted") sub += ` — رُفع بواسطة ${b.liftedByName || "الأدمن"} في ${formatDate(b.liftedAt)}: ${b.liftReason}`;
     const side = el("div", { class: "abk-row-side" }, [chip(st.label, st.cls)]);
     if (b.state === "active") {
@@ -542,8 +668,9 @@ function switchTab(tab) {
     b.classList.toggle("is-active", a);
     b.setAttribute("aria-selected", a ? "true" : "false");
   });
-  ["rewards", "wallets", "orders", "bans"].forEach((t) => show($(`abkPanel-${t}`), t === tab));
+  ["dashboard", "rewards", "wallets", "orders", "bans"].forEach((t) => show($(`abkPanel-${t}`), t === tab));
   show($("abkAddReward"), tab === "rewards");
+  if (tab === "dashboard") { if (!state.stats) loadStats(); return; }
   if (!state.loaded[tab]) load(tab);
 }
 
@@ -552,6 +679,11 @@ function bindEvents() {
   document.querySelectorAll("[data-retry]").forEach((b) => b.addEventListener("click", () => load(b.dataset.retry)));
 
   $("abkAddReward").addEventListener("click", () => openReward(null));
+  $("abkStatsRefresh").addEventListener("click", loadStats);
+  $("abkOrdersMore").addEventListener("click", loadMoreOrders);
+  $("abkOrderClose").addEventListener("click", () => setOverlay("abkOrderOverlay", false));
+  ["abkRName", "abkRDesc", "abkRPrice"].forEach((id) => $(id).addEventListener("input", updateRewardPreview));
+  $("abkAAmount").addEventListener("input", updateAdjustPreview);
   $("abkRewardSearch").addEventListener("input", debounce(renderRewards, 200));
   $("abkRewardFilter").addEventListener("change", renderRewards);
   $("abkRLimited").addEventListener("change", () => show($("abkRStockWrap"), $("abkRLimited").checked));
@@ -583,9 +715,9 @@ async function init() {
   const session = requireAdmin();
   if (!session) return;
   bindEvents();
-  await load("rewards");
-  // تحميل هادئ للطلبات والمنع لعرض شارات العدد
-  load("orders"); load("bans");
+  await loadStats();
+  // تحميل هادئ للجوائز (تحمل إعداد الضريبة) والطلبات والمنع لشارات العدد
+  load("rewards"); load("bans");
 }
 
 onReady(init);
