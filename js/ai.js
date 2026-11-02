@@ -38,6 +38,9 @@ import { sendAIMessage } from "./api.js";
 
 import { barai } from "./barai/safe.js";
 
+import { renderRichText } from "./ai-render.js";
+import { initCosmicCores, setCoreState, getCoreState } from "./ai-core.js";
+
 /* ============================================================
    01 — ثوابت
    ============================================================ */
@@ -71,6 +74,7 @@ let messagesEl       = null;
 let inputEl          = null;
 let sendBtn          = null;
 let newChatBtn       = null;
+let pageEl           = null;
 
 
 /* ============================================================
@@ -97,6 +101,7 @@ function cacheElements() {
   inputEl        = document.getElementById("aiInput");
   sendBtn        = document.getElementById("aiSendBtn");
   newChatBtn     = document.getElementById("newChatBtn");
+  pageEl         = document.querySelector(".ci-page");
 }
 
 
@@ -168,37 +173,22 @@ function setSending(state) {
  */
 function createMessageElement(role, text, isTyping = false) {
   const wrapper = document.createElement("div");
-  wrapper.className = "ai-msg ai-msg--" + role;
+  wrapper.className = "ai-msg ai-msg--" + role + (isTyping ? " is-typing" : "");
 
-  // Avatar
+  // Marker (العلامة الجانبية لهوية المساعد؛ الشكل كله من CSS)
   const avatar = document.createElement("div");
   avatar.className = "ai-msg-avatar";
   avatar.setAttribute("aria-hidden", "true");
-
-  if (role === "user") {
-    {
-      const g = document.createElement("span");
-      g.className = "icon icon-user";
-      g.setAttribute("aria-hidden", "true");
-      avatar.replaceChildren(g);
-    }
-  } else if (role === "assistant") {
-    {
-      const g = document.createElement("span");
-      g.className = "icon icon-sparkles";
-      g.setAttribute("aria-hidden", "true");
-      avatar.replaceChildren(g);
-    }
-  } else {
-    {
-      const g = document.createElement("span");
-      g.className = "icon icon-warning";
-      g.setAttribute("aria-hidden", "true");
-      avatar.replaceChildren(g);
-    }
-  }
-
   wrapper.appendChild(avatar);
+
+  const body = document.createElement("div");
+  body.className = "ai-msg-body";
+
+  const label = document.createElement("span");
+  label.className = "ci-msg-label";
+  label.setAttribute("aria-hidden", "true");
+  label.textContent = role === "user" ? "أنت" : role === "assistant" ? "Cosmic" : "System";
+  body.appendChild(label);
 
   // Bubble
   const bubble = document.createElement("div");
@@ -208,17 +198,25 @@ function createMessageElement(role, text, isTyping = false) {
     // Typing indicator
     const typing = document.createElement("div");
     typing.className = "ai-typing";
+    typing.setAttribute("role", "status");
+    typing.setAttribute("aria-label", "المساعد يعالج سؤالك");
     for (let i = 0; i < 3; i++) {
       const dot = document.createElement("span");
       dot.className = "ai-typing-dot";
       typing.appendChild(dot);
     }
     bubble.appendChild(typing);
+  } else if (role === "assistant") {
+    // رد المساعد: Markdown + معادلات (DOM آمن، بدون innerHTML)
+    bubble.classList.add("ci-rich");
+    bubble.appendChild(renderRichText(safeText(text)));
   } else {
+    // رسالة الطالب والأخطاء: نص خام
     bubble.textContent = safeText(text);
   }
 
-  wrapper.appendChild(bubble);
+  body.appendChild(bubble);
+  wrapper.appendChild(body);
   return wrapper;
 }
 
@@ -230,8 +228,36 @@ function createMessageElement(role, text, isTyping = false) {
 function appendMessage(el) {
   if (!messagesEl) return el;
   messagesEl.appendChild(el);
-  scrollToBottom();
+  markScrollers(el);
+  // الرد الطويل: ابدأ من أول سطر فيه (مش من آخره) عشان القراءة على الموبايل
+  if (el.classList.contains("ai-msg--assistant") && !el.classList.contains("is-typing")) scrollToMessage(el);
+  else scrollToBottom();
   return el;
+}
+
+/** يعلّم المعادلات/الجداول العريضة بتلميح تمرير أفقي (داخل اللوحة نفسها، الصفحة لا تتحرك). */
+function markScrollers(root) {
+  requestAnimationFrame(() => {
+    root.querySelectorAll(".ci-eq, .ci-table-wrap").forEach((n) => {
+      n.classList.toggle("is-scroll", n.scrollWidth > n.clientWidth + 2);
+    });
+  });
+}
+
+/**
+ * تمرير لبداية رسالة طويلة، أو لآخر المحادثة لو الرسالة تكفيها الشاشة.
+ */
+function scrollToMessage(el) {
+  if (!conversationEl) return;
+  requestAnimationFrame(() => {
+    const box = conversationEl.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    if (r.height > box.height * 0.85) {
+      conversationEl.scrollTop += r.top - box.top - 12;
+    } else {
+      conversationEl.scrollTop = conversationEl.scrollHeight;
+    }
+  });
 }
 
 /**
@@ -304,7 +330,7 @@ async function handleSend() {
 
   // 3) تعطيل الزر
   setSending(true);
-  try { barai.ambient(".ai-header-icon", "ponder"); } catch (e) { /* تجاهل */ }
+  setCoreState("processing");
 
   // 4) Typing indicator
   const typingEl = appendMessage(createMessageElement("assistant", "", true));
@@ -330,7 +356,8 @@ async function handleSend() {
   }
 
   setSending(false);
-  try { barai.ambient(".ai-header-icon", "glasses"); } catch (e) { /* تجاهل */ }
+  // سطح المكتب: رجّع التركيز لمربع الكتابة بعد الرد (على الهاتف لا نفتح الكيبورد من نفسنا)
+  if (!/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) && inputEl) { try { inputEl.focus(); } catch (e) { /* تجاهل */ } }
 
   // 7) معالجة النتيجة
   if (!result || !result.success) {
@@ -341,6 +368,7 @@ async function handleSend() {
 
     const errorEl = createMessageElement("error", msg);
     appendMessage(errorEl);
+    setCoreState("error");
     try {
       if (code === "DAILY_LIMIT_REACHED") barai.notify("ai.limit");
       else if (code !== "UNAUTHORIZED" && code !== "NETWORK_ERROR") barai.notify("ai.error");   // الجلسة/النت لهما رسالتهما الخاصة
@@ -360,17 +388,16 @@ async function handleSend() {
 
   if (!assistantText) {
     appendMessage(createMessageElement("error", "لم يصل رد من المساعد. حاول مرة أخرى."));
+    setCoreState("error");
     return;
   }
 
   // 9) إضافة رد المساعد
+  setCoreState("responding");
   appendMessage(createMessageElement("assistant", assistantText));
   addToHistory("assistant", assistantText);
 
-  // 10) تحديث الـ subtitle
-  if (subtitleEl) {
-    subtitleEl.textContent = "جاهز لسؤالك التالي";
-  }
+  // 10) النواة تعود تلقائيًا إلى idle (انظر setCoreState) وتتحدّث الـ subtitle معها
 }
 
 
@@ -393,8 +420,8 @@ function handleNewChat() {
 
   showEmpty();
 
-  // رجّع الـ subtitle
-  if (subtitleEl) subtitleEl.textContent = "جاهز أساعدك في مذاكرتك";
+  // رجّع النواة والـ subtitle لحالة البداية
+  setCoreState("idle");
 
   // رجّع الـ focus
   if (inputEl) inputEl.focus();
@@ -447,6 +474,10 @@ function bindEvents() {
 
     // Auto-grow
     inputEl.addEventListener("input", autoGrowTextarea);
+
+    // النواة تتفاعل مع التركيز (لا تقاطع المعالجة أو الرد أو الخطأ)
+    inputEl.addEventListener("focus", () => { if (getCoreState() === "idle") setCoreState("focused"); });
+    inputEl.addEventListener("blur", () => { if (getCoreState() === "focused") setCoreState("idle"); });
   }
 
   // زر "محادثة جديدة"
@@ -456,6 +487,36 @@ function bindEvents() {
 
   // Suggestions
   bindSuggestions();
+}
+
+
+/* ============================================================
+   13b — لوحة المفاتيح على الهاتف (visualViewport)
+   ============================================================ */
+
+/**
+ * يثبّت ارتفاع الصفحة على الـ viewport المرئي فيبقى صندوق الكتابة فوق الكيبورد،
+ * ولا تُغطّي لوحة المفاتيح الرسائل. data-compact يصغّر المشهد الافتتاحي على الشاشات القصيرة.
+ */
+function bindViewport() {
+  const vv = window.visualViewport;
+  if (!vv || !pageEl) return;
+  let raf = 0;
+  const apply = () => {
+    raf = 0;
+    const h = Math.round(vv.height);
+    pageEl.style.setProperty("--ci-vh", h + "px");
+    pageEl.style.setProperty("--ci-vt", Math.round(vv.offsetTop) + "px");
+    pageEl.setAttribute("data-compact", String(h < 520));
+    const kb = window.innerHeight - h > 120;
+    const was = pageEl.classList.contains("is-kb");
+    pageEl.classList.toggle("is-kb", kb);
+    if (kb && !was && messages.length) scrollToBottom();
+  };
+  const sched = () => { if (!raf) raf = requestAnimationFrame(apply); };
+  vv.addEventListener("resize", sched);
+  vv.addEventListener("scroll", sched);
+  apply();
 }
 
 
@@ -474,7 +535,9 @@ function init() {
   showEmpty();
 
   bindEvents();
-  try { barai.notify("ai.open"); barai.ambientMount(".ai-header-icon", "glasses"); } catch (e) { /* تجاهل */ }
+  initCosmicCores();
+  bindViewport();
+  try { barai.notify("ai.open"); } catch (e) { /* تجاهل */ }
 
   // Auto-grow مبدئي
   autoGrowTextarea();
