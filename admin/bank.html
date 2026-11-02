@@ -36,7 +36,7 @@
           <h1 class="adm-header-title">بنك مستر إسماعيل</h1>
           <p class="adm-header-sub">الجوائز والأرصدة والطلبات والمنع</p>
         </div>
-        <button type="button" class="adm-header-btn adm-header-btn--primary" id="abkAddReward" title="إضافة جائزة" aria-label="إضافة جائزة">
+        <button type="button" class="adm-header-btn adm-header-btn--primary" id="abkAddReward" hidden title="إضافة جائزة" aria-label="إضافة جائزة">
           <span class="icon icon-plus" aria-hidden="true"></span>
         </button>
       </div>
@@ -45,14 +45,35 @@
     <main class="adm-content">
 
       <div class="abk-tabs" role="tablist" aria-label="أقسام البنك">
-        <button type="button" class="abk-tab is-active" role="tab" data-tab="rewards" aria-selected="true">الجوائز</button>
+        <button type="button" class="abk-tab is-active" role="tab" data-tab="dashboard" aria-selected="true">نظرة عامة</button>
+        <button type="button" class="abk-tab" role="tab" data-tab="rewards" aria-selected="false">الجوائز</button>
         <button type="button" class="abk-tab" role="tab" data-tab="wallets" aria-selected="false">أرصدة الطلاب</button>
         <button type="button" class="abk-tab" role="tab" data-tab="orders" aria-selected="false">الطلبات<span class="abk-count" id="abkOrdersCount" hidden>0</span></button>
         <button type="button" class="abk-tab" role="tab" data-tab="bans" aria-selected="false">المنع<span class="abk-count" id="abkBansCount" hidden>0</span></button>
       </div>
 
+      <!-- ===== نظرة عامة ===== -->
+      <section class="abk-panel" id="abkPanel-dashboard">
+        <div class="abk-toolbar">
+          <p class="abk-tax-line" id="abkTaxLine">جارٍ التحميل…</p>
+          <button type="button" class="abk-btn abk-btn--sm" id="abkStatsRefresh">تحديث الإحصائيات</button>
+        </div>
+        <div class="abk-stats" id="abkStats" aria-live="polite">
+          <div class="abk-stat"><strong id="stRewardsTotal">—</strong><span>إجمالي الجوائز</span></div>
+          <div class="abk-stat"><strong id="stRewardsPublished">—</strong><span>المنشورة</span></div>
+          <div class="abk-stat"><strong id="stRewardsHidden">—</strong><span>المخفية</span></div>
+          <div class="abk-stat is-hot"><strong id="stOrdersNew">—</strong><span>طلبات جديدة</span></div>
+          <div class="abk-stat"><strong id="stOrdersPending">—</strong><span>طلبات معلقة</span></div>
+          <div class="abk-stat"><strong id="stOrdersDone">—</strong><span>طلبات مكتملة</span></div>
+          <div class="abk-stat"><strong id="stWallets">—</strong><span>إجمالي الأرصدة</span></div>
+          <div class="abk-stat"><strong id="stPurchases">—</strong><span>إجمالي المشتريات</span></div>
+          <div class="abk-stat"><strong id="stRefunds">—</strong><span>إجمالي الاسترجاعات</span></div>
+        </div>
+        <p class="abk-row-sub" id="abkStatsError" hidden>تعذر تحميل الإحصائيات. حاول التحديث مرة أخرى.</p>
+      </section>
+
       <!-- ===== الجوائز ===== -->
-      <section class="abk-panel" id="abkPanel-rewards">
+      <section class="abk-panel" id="abkPanel-rewards" hidden>
         <div class="abk-toolbar">
           <input class="adm-modal-input" id="abkRewardSearch" type="search" placeholder="ابحث باسم الجائزة" aria-label="بحث في الجوائز" />
           <select class="adm-modal-select" id="abkRewardFilter" aria-label="تصفية الجوائز">
@@ -107,7 +128,7 @@
       <!-- ===== الطلبات ===== -->
       <section class="abk-panel" id="abkPanel-orders" hidden>
         <p class="abk-policy">
-          <strong>السياسة المالية:</strong> يُخصم ثمن الجائزة فور تأكيد الطالب. رفض الطلب قبل التسليم يُرجع المبلغ كاملًا
+          <strong>السياسة المالية:</strong> يُخصم السعر النهائي (شاملًا الضريبة إن كانت مفعّلة) فور تأكيد الطالب. رفض الطلب قبل التسليم يُرجع المبلغ المدفوع كاملًا
           تلقائيًا (معاملة استرجاع مستقلة) ويعيد الكمية للمخزون. بعد «تم التسليم» لا استرجاع ولا رفض.
         </p>
         <div class="abk-toolbar">
@@ -123,6 +144,7 @@
         </div>
         <div class="adm-state" id="abkOrdersLoading"><p class="adm-state-text">جارٍ التحميل…</p></div>
         <div class="abk-list" id="abkOrdersList" hidden></div>
+        <button type="button" class="abk-btn abk-more" id="abkOrdersMore" hidden>تحميل المزيد من الطلبات</button>
         <div class="adm-state" id="abkOrdersEmpty" hidden>
           <h3 class="adm-state-title">لا توجد طلبات</h3>
         </div>
@@ -171,6 +193,7 @@
           <label class="adm-modal-label" for="abkRPrice">السعر (فلوس افتراضية)</label>
           <input class="adm-modal-input" id="abkRPrice" type="number" min="1" step="1" inputmode="numeric" />
         </div>
+        <p class="abk-pricepreview" id="abkRPricePreview" aria-live="polite"></p>
         <div class="adm-modal-group">
           <label class="adm-modal-label" for="abkRImage">الصورة (JPG / PNG / WebP)</label>
           <input class="adm-modal-input" id="abkRImage" type="file" accept="image/jpeg,image/png,image/webp" />
@@ -189,6 +212,17 @@
           <label class="adm-modal-check"><input type="checkbox" id="abkRRequestable" checked /> متاحة للطلب</label>
         </div>
 
+        <div class="abk-studentview" aria-label="معاينة كما تظهر للطالب">
+          <p class="abk-studentview-label">معاينة كما تظهر للطالب</p>
+          <div class="abk-studentview-card">
+            <div class="abk-studentview-img" id="abkRViewImg"><span class="icon icon-trophy" aria-hidden="true"></span></div>
+            <div class="abk-studentview-body">
+              <strong id="abkRViewName">اسم الجائزة</strong>
+              <span id="abkRViewDesc"></span>
+              <b id="abkRViewPrice"></b>
+            </div>
+          </div>
+        </div>
         <div class="adm-modal-actions">
           <button type="button" class="adm-modal-btn adm-modal-btn--cancel" id="abkRCancel">إلغاء</button>
           <button type="button" class="adm-modal-btn adm-modal-btn--primary" id="abkRSave">حفظ</button>
@@ -206,6 +240,7 @@
           <label class="adm-modal-label" for="abkAAmount">المبلغ</label>
           <input class="adm-modal-input" id="abkAAmount" type="number" min="1" step="1" inputmode="numeric" />
         </div>
+        <p class="abk-pricepreview" id="abkAPreview" aria-live="polite"></p>
         <div class="adm-modal-group">
           <label class="adm-modal-label" for="abkAReason">السبب (إلزامي)</label>
           <textarea class="adm-modal-textarea" id="abkAReason" maxlength="200"></textarea>
@@ -213,6 +248,18 @@
         <div class="adm-modal-actions">
           <button type="button" class="adm-modal-btn adm-modal-btn--cancel" id="abkACancel">إلغاء</button>
           <button type="button" class="adm-modal-btn adm-modal-btn--primary" id="abkAConfirm">تأكيد</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== تفاصيل الطلب ===== -->
+    <div class="adm-modal-overlay" id="abkOrderOverlay" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="abkOrderTitle">
+      <div class="adm-modal">
+        <h2 class="adm-modal-title" id="abkOrderTitle">تفاصيل الطلب</h2>
+        <p class="adm-modal-sub" id="abkOrderSub"></p>
+        <div class="abk-detail-list" id="abkOrderBody"></div>
+        <div class="adm-modal-actions">
+          <button type="button" class="adm-modal-btn adm-modal-btn--cancel" id="abkOrderClose">إغلاق</button>
         </div>
       </div>
     </div>
