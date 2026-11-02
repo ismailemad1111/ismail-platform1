@@ -807,6 +807,16 @@
         <button
           type="button"
           class="st-tab"
+          data-tab="bank"
+          role="tab"
+          aria-selected="false"
+        >
+          <span aria-hidden="true"><span class="icon icon-trophy" aria-hidden="true"></span></span>
+          <span>بنك مستر إسماعيل</span>
+        </button>
+        <button
+          type="button"
+          class="st-tab"
           data-tab="ai"
           role="tab"
           aria-selected="false"
@@ -993,6 +1003,44 @@
 
         </form>
 
+      </section>
+
+      <!-- ======================================================
+           PANEL — بنك مستر إسماعيل (الضريبة الاختيارية)
+           ====================================================== -->
+      <section class="st-panel" data-panel="bank">
+        <div class="st-section-head">
+          <h2 class="st-section-title">
+            <span class="st-section-icon" aria-hidden="true"><span class="icon icon-trophy" aria-hidden="true"></span></span>
+            <span>إعدادات بنك مستر إسماعيل</span>
+          </h2>
+        </div>
+
+        <form class="st-form" id="stBankForm" novalidate>
+          <div class="st-switch-row">
+            <div class="st-switch-info">
+              <div class="st-switch-label">تفعيل الضريبة على الجوائز</div>
+              <div class="st-switch-hint">معطلة افتراضيًا. تنطبق على الطلبات الجديدة فقط ولا تغيّر الطلبات القديمة.</div>
+            </div>
+            <div class="st-switch" id="stBankTaxSwitch" role="switch" aria-checked="false" tabindex="0"></div>
+          </div>
+
+          <div class="st-field">
+            <label class="st-label" for="stBankTaxRate">نسبة الضريبة (%)</label>
+            <input class="st-input" type="number" id="stBankTaxRate" min="0" max="50" step="0.01" inputmode="decimal" value="0" />
+            <div class="st-hint">من 0 إلى 50، وبحد أقصى خانتين عشريتين.</div>
+          </div>
+
+          <div class="st-field">
+            <label class="st-label" for="stBankPreviewBase">معاينة: سعر الجائزة الأساسي</label>
+            <input class="st-input" type="number" id="stBankPreviewBase" min="1" step="1" inputmode="numeric" value="300" />
+            <div class="st-hint" id="stBankPreview" aria-live="polite" style="margin-top:10px;line-height:2;"></div>
+          </div>
+
+          <div class="st-field">
+            <button type="submit" class="st-btn st-btn--primary" id="stBankSaveBtn" style="width:100%;min-height:46px;">حفظ إعدادات البنك</button>
+          </div>
+        </form>
       </section>
 
       <!-- ======================================================
