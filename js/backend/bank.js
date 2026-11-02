@@ -31,6 +31,28 @@ export const DAY_MS = 24 * 60 * 60 * 1000;
 export const KEY_PATTERN = /^[A-Za-z0-9]{8,64}$/;
 export const ID_PATTERN = /^[A-Za-z0-9_-]{1,120}$/;
 
+/* ---------------- الضريبة الاختيارية (settings/bank) ----------------
+   الافتراضي: معطلة (taxEnabled=false, taxRate=0). الحساب يتم هنا (Backend) فقط،
+   وتتحقق قواعد Firestore من نفس المعادلة عند إنشاء الطلب.
+   taxAmount = floor(basePrice * taxRate / 100 + 0.5)  (= Math.round للقيم الموجبة) */
+export const MAX_TAX_RATE = 50;
+
+/** يقرأ مستند الإعدادات الخام ويرجع إعدادًا آمنًا (أي قيمة غير صالحة = ضريبة معطلة) */
+export function normalizeTax(d) {
+  const rate = d ? Number(d.taxRate) : 0;
+  const valid = Number.isFinite(rate) && rate >= 0 && rate <= MAX_TAX_RATE;
+  const enabled = !!d && d.taxEnabled === true && valid && rate > 0;
+  return { enabled, rate: enabled ? rate : 0 };
+}
+
+/** يحسب السعر الأساسي + الضريبة + النهائي. الضريبة المعطلة = لا رسوم إضافية */
+export function calcPricing(basePrice, tax) {
+  const base = Number(basePrice) || 0;
+  const rate = tax && tax.enabled ? Number(tax.rate) || 0 : 0;
+  const taxAmount = rate > 0 ? Math.floor((base * rate) / 100 + 0.5) : 0;
+  return { basePrice: base, taxRate: rate, taxAmount, finalPrice: base + taxAmount };
+}
+
 export const ORDER_STATUS_LABELS = {
   pending: "قيد المراجعة",
   accepted: "مقبول",
@@ -65,8 +87,12 @@ export function rewardAvailability(d) {
   return "available";
 }
 
-export function publicReward(d) {
+export function publicReward(d, tax = null) {
+  const pr = calcPricing(d.price, tax);
   return {
+    basePrice: pr.basePrice,
+    taxAmount: pr.taxAmount,
+    finalPrice: pr.finalPrice,
     id: d.id,
     name: safeText(d.name),
     description: safeText(d.description),
@@ -118,12 +144,14 @@ async function ensureWallet(st) {
 route("GET", "/api/student/bank", async () => {
   const st = requireStudent();
 
-  const [rows, wallet] = await Promise.all([
+  const [rows, wallet, taxDoc] = await Promise.all([
     queryDocs("bankRewards", fs.where("published", "==", true)),
-    getDocData("bankWallets", st.id)
+    getDocData("bankWallets", st.id),
+    getDocData("settings", "bank")
   ]);
 
-  const rewards = rows.map(publicReward).sort(byCreatedDesc);
+  const tax = normalizeTax(taxDoc);
+  const rewards = rows.map((r) => publicReward(r, tax)).sort(byCreatedDesc);
   const w = walletPayload(wallet);
 
   let ban = null;
@@ -145,7 +173,7 @@ route("GET", "/api/student/bank", async () => {
     }
   }
 
-  return ok(toPlain({ wallet: w, ban, rewards }));
+  return ok(toPlain({ wallet: w, ban, rewards, tax }));
 });
 
 /* ------------------------------------------------------------
@@ -160,22 +188,33 @@ route("GET", "/api/student/bank/history", async () => {
   ]);
 
   return ok(toPlain({
-    orders: orders.sort(byCreatedDesc).slice(0, 50).map((o) => ({
+    orders: orders.sort(byCreatedDesc).slice(0, 100).map((o) => ({
       id: o.id,
+      rewardId: safeText(o.rewardId),
       rewardName: safeText(o.rewardName),
       price: Number(o.price) || 0,
+      /* طلبات قديمة بلا حقول ضريبة: السعر الأساسي = المدفوع والضريبة صفر */
+      basePrice: Number.isFinite(Number(o.basePrice)) && o.basePrice !== null && o.basePrice !== undefined ? Number(o.basePrice) : (Number(o.price) || 0),
+      taxRate: Number(o.taxRate) || 0,
+      taxAmount: Number(o.taxAmount) || 0,
       status: safeText(o.status),
       rejectReason: safeText(o.rejectReason),
+      refunded: !!o.refundTxId,
+      acceptedAt: o.acceptedAt || null,
+      readyAt: o.readyAt || null,
+      deliveredAt: o.deliveredAt || null,
+      rejectedAt: o.rejectedAt || null,
       createdAt: o.createdAt || null,
       updatedAt: o.updatedAt || null
     })),
-    transactions: txs.sort(byCreatedDesc).slice(0, 50).map((t) => ({
+    transactions: txs.sort(byCreatedDesc).slice(0, 100).map((t) => ({
       id: t.id,
       type: safeText(t.type),
       amount: Number(t.amount) || 0,
       balanceBefore: Number(t.balanceBefore) || 0,
       balanceAfter: Number(t.balanceAfter) || 0,
       reason: safeText(t.reason),
+      orderId: safeText(t.orderId),
       createdAt: t.createdAt || null
     })),
     bans: bans.sort(byCreatedDesc).slice(0, 20).map((b) => ({
@@ -213,6 +252,7 @@ route("POST", "/api/student/bank/order", async ({ body }) => {
   const txRef = ref("bankTransactions", `${orderId}_purchase`);
   const walletRef = ref("bankWallets", st.id);
   const rewardRef = ref("bankRewards", rewardId);
+  const taxRef = ref("settings", "bank");
 
   await ensureWallet(st);
 
@@ -241,6 +281,7 @@ route("POST", "/api/student/bank/order", async ({ body }) => {
 
       const walletSnap = await tx.get(walletRef);
       const rewardSnap = await tx.get(rewardRef);
+      const taxSnap = await tx.get(taxRef);
 
       /* ----- التحقق من البيانات الفعلية ----- */
       if (!walletSnap.exists()) {
@@ -274,11 +315,14 @@ route("POST", "/api/student/bank/order", async ({ body }) => {
         return;
       }
 
-      const price = Number(r.price);
-      if (!Number.isInteger(price) || price < 1) {
+      const basePrice = Number(r.price);
+      if (!Number.isInteger(basePrice) || basePrice < 1) {
         outcome = { kind: "error", code: "REWARD_UNAVAILABLE", message: "سعر الجائزة غير صالح. تواصل مع المعلم." };
         return;
       }
+      /* السعر النهائي يحسبه الـ Backend من السعر الفعلي + الضريبة المعتمدة؛ expectedPrice للتنبيه بتغيّر السعر فقط */
+      const pricing = calcPricing(basePrice, normalizeTax(taxSnap.exists() ? taxSnap.data() : null));
+      const price = pricing.finalPrice;
       if (expectedPrice !== null && expectedPrice !== price) {
         outcome = {
           kind: "error",
@@ -305,6 +349,9 @@ route("POST", "/api/student/bank/order", async ({ body }) => {
         rewardId,
         rewardName: safeText(r.name),
         price,
+        basePrice: pricing.basePrice,
+        taxRate: pricing.taxRate,
+        taxAmount: pricing.taxAmount,
         quantity: 1,
         status: "pending",
         balanceBefore: balance,
