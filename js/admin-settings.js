@@ -717,6 +717,376 @@ async function handleSaveSettings(event) {
   settings = { ...settings, ...body };
 
   showToast("تم حفظ الإعدادات ✅", "success");
+  loadAISettings(true);   // مزامنة مفتاح التشغيل في تبويب الذكاء الاصطناعي
+}
+
+
+/* ============================================================
+   14ب — إدارة الذكاء الاصطناعي (تبويب مستقل)
+   ------------------------------------------------------------
+   لا يُعرض المفتاح المحفوظ أبدًا: الخادم المحلي يعيد hasApiKey وآخر 4 أحرف فقط،
+   وحقل المفتاح يبقى فارغًا (يُرسل فقط عند كتابة قيمة جديدة).
+   ============================================================ */
+
+const AI_IDS = ["gemini", "openai", "deepseek"];
+const aiState = { settings: null, busy: new Set(), confirmCb: null };
+
+function esc(v) {
+  return String(v === null || v === undefined ? "" : v).replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+const aiEl = (id) => document.getElementById(id);
+const aiCardEl = (id) => document.querySelector(`[data-ai-card="${id}"]`);
+
+/** نداء موحّد للمسارات: يعيد { ok, data, message } ويعالج انتهاء الجلسة */
+async function aiCall(endpoint, options) {
+  const result = await workerFetch(endpoint, options);
+  if (result && result.success) return { ok: true, data: result.data || {} };
+  const code = (result && result.error && result.error.code) || ERRORS.SERVER_ERROR;
+  if (code === ERRORS.UNAUTHORIZED) {
+    showToast(ERROR_MESSAGES.UNAUTHORIZED, "warning");
+    setTimeout(() => { window.location.href = "login.html"; }, 1500);
+  }
+  return { ok: false, message: (result && result.error && result.error.message) || ERROR_MESSAGES[code] || ERROR_MESSAGES.SERVER_ERROR };
+}
+
+function aiSwitchHtml(on, key, label) {
+  return `<div class="st-switch${on ? " is-on" : ""}" data-ai-switch="${esc(key)}" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="${esc(label)}" tabindex="0"></div>`;
+}
+
+function renderAIStatus() {
+  const s = aiState.settings;
+  const el = aiEl("stAIStatus");
+  if (!s || !el) return;
+  const enabledCount = AI_IDS.filter((id) => s.providers[id].enabled).length;
+  const keyed = AI_IDS.filter((id) => s.providers[id].hasApiKey).map((id) => s.providers[id].label);
+  const def = s.providers[s.defaultProvider];
+  const tiles = [
+    ["حالة الذكاء الاصطناعي", s.enabled ? "مفعّل" : "متوقف"],
+    ["المزود الافتراضي", def ? def.label : "—"],
+    ["النموذج الحالي", def ? def.model : "—"],
+    ["المزودون المفعّلون", `${enabledCount} من ${AI_IDS.length}`],
+    ["مفاتيح API", keyed.length ? `محفوظة: ${keyed.join("، ")}` : "لا توجد مفاتيح محفوظة"],
+    ["الحد اليومي لكل طالب", `${s.dailyLimit} رسالة`]
+  ];
+  el.innerHTML = tiles.map(([l, v]) => `<div class="ai-stat"><div class="ai-stat-label">${esc(l)}</div><div class="ai-stat-value">${esc(v)}</div></div>`).join("");
+}
+
+function renderAIGlobal() {
+  const s = aiState.settings;
+  const el = aiEl("stAIGlobal");
+  if (!s || !el) return;
+  el.innerHTML = `
+    <div class="st-switch-row">
+      <div class="st-switch-info">
+        <div class="st-switch-label">تشغيل الذكاء الاصطناعي</div>
+        <div class="st-switch-hint">إيقاف شامل: يظهر المساعد للطلاب كـ «غير متاح» دون حذف أي إعدادات.</div>
+      </div>
+      ${aiSwitchHtml(s.enabled, "master", "تشغيل الذكاء الاصطناعي")}
+    </div>
+    <div class="ai-grid" style="margin-top:14px;">
+      <div class="st-field">
+        <label class="st-label" for="stAIDefault">المزود الافتراضي</label>
+        <select class="st-select" id="stAIDefault">
+          ${AI_IDS.map((id) => `<option value="${id}"${id === s.defaultProvider ? " selected" : ""}>${esc(s.providers[id].label)}</option>`).join("")}
+        </select>
+        <div class="st-hint">لا يوجد تبديل تلقائي لمزود آخر عند الفشل.</div>
+      </div>
+      <div class="st-field">
+        <label class="st-label" for="stAIDailyLimit">الحد اليومي لكل طالب</label>
+        <input type="number" class="st-input" id="stAIDailyLimit" min="1" max="500" step="1" value="${esc(s.dailyLimit)}" />
+      </div>
+    </div>
+    <button type="button" class="st-btn st-btn--primary" data-ai-action="save-global" style="width:100%;min-height:46px;">حفظ الإعدادات العامة</button>`;
+}
+
+function aiCardHtml(id) {
+  const p = aiState.settings.providers[id];
+  const keyText = p.hasApiKey ? `محفوظ${p.keyHint ? " ••••" + p.keyHint : ""}` : "غير محفوظ";
+  return `
+    <div class="st-form ai-card" data-ai-card="${id}">
+      <div class="ai-card-head">
+        <h3 class="ai-card-title">${esc(p.label)} <span class="ai-badge${p.enabled ? " is-ok" : ""}">${p.enabled ? "مفعّل" : "معطّل"}</span></h3>
+        ${aiSwitchHtml(p.enabled, "provider:" + id, "تفعيل " + p.label)}
+      </div>
+
+      <div class="st-field">
+        <label class="st-label" for="aiKey-${id}">مفتاح API</label>
+        <div class="ai-key-state">
+          <span class="ai-badge${p.hasApiKey ? " is-ok" : ""}">${esc(keyText)}</span>
+          <span class="ai-actions-inline">
+            ${p.hasApiKey ? `<button type="button" class="st-btn st-btn--ghost" data-ai-action="edit-key" data-id="${id}">تعديل المفتاح</button>
+            <button type="button" class="st-btn st-btn--ghost ai-danger" data-ai-action="delete-key" data-id="${id}">حذف المفتاح</button>` : ""}
+          </span>
+        </div>
+        <div class="ai-key-row" data-ai-keyrow${p.hasApiKey ? " hidden" : ""} style="margin-top:8px;">
+          <input type="password" class="st-input" id="aiKey-${id}" data-ai-field="apiKey" autocomplete="new-password" spellcheck="false" placeholder="${p.hasApiKey ? "اكتب مفتاحًا جديدًا للاستبدال" : "الصق مفتاح API هنا"}" />
+          <button type="button" class="st-btn st-btn--ghost" data-ai-action="toggle-key" data-id="${id}" aria-label="إظهار أو إخفاء المفتاح">إظهار</button>
+        </div>
+        <div class="st-hint">ترك الحقل فارغًا يُبقي المفتاح الحالي كما هو.</div>
+      </div>
+
+      <div class="st-field">
+        <label class="st-label" for="aiModel-${id}">النموذج (Model)</label>
+        <input type="text" class="st-input" id="aiModel-${id}" data-ai-field="model" dir="ltr" maxlength="100" value="${esc(p.model)}" />
+      </div>
+      <div class="ai-grid" style="grid-template-columns:1fr 1fr;margin-bottom:14px;">
+        <div class="st-field" style="margin:0;">
+          <label class="st-label" for="aiTokens-${id}">Max Output Tokens</label>
+          <input type="number" class="st-input" id="aiTokens-${id}" data-ai-field="maxOutputTokens" min="50" max="2000" step="1" value="${esc(p.maxOutputTokens)}" />
+        </div>
+        <div class="st-field" style="margin:0;">
+          <label class="st-label" for="aiTemp-${id}">Temperature</label>
+          <input type="number" class="st-input" id="aiTemp-${id}" data-ai-field="temperature" min="0" max="2" step="0.1" value="${esc(p.temperature)}" />
+        </div>
+      </div>
+
+      <div class="ai-actions">
+        <button type="button" class="st-btn st-btn--primary" data-ai-action="save-provider" data-id="${id}">حفظ المزود</button>
+        <button type="button" class="st-btn st-btn--ghost" data-ai-action="test" data-id="${id}">اختبار الاتصال</button>
+      </div>
+      <div class="ai-result" data-ai-result hidden role="status" aria-live="polite"></div>
+    </div>`;
+}
+
+function renderAISettings() {
+  if (!aiState.settings) return;
+  aiEl("stAIContent").innerHTML = `
+    <div class="ai-status" id="stAIStatus"></div>
+    <div class="st-form ai-card" id="stAIGlobal"></div>
+    ${AI_IDS.map(aiCardHtml).join("")}`;
+  renderAIStatus();
+  renderAIGlobal();
+}
+
+function renderAICard(id) {
+  const old = aiCardEl(id);
+  if (!old) return;
+  old.outerHTML = aiCardHtml(id);
+}
+
+function aiShowState(state) {
+  aiEl("stAILoading").hidden = state !== "loading";
+  aiEl("stAIError").hidden = state !== "error";
+  aiEl("stAIContent").hidden = state !== "content";
+}
+
+async function loadAISettings(silent) {
+  if (aiState.busy.has("load")) return;
+  aiState.busy.add("load");
+  if (!silent) aiShowState("loading");
+  const r = await aiCall("/api/admin/ai-settings");
+  aiState.busy.delete("load");
+  if (!r.ok || !r.data.settings) {
+    if (!silent) {
+      aiEl("stAIErrorMsg").textContent = r.message || "تعذّر تحميل الإعدادات.";
+      aiShowState("error");
+    }
+    return;
+  }
+  aiState.settings = r.data.settings;
+  if (silent && !aiEl("stAIStatus")) return;
+  if (silent) { renderAIStatus(); refreshMasterSwitch(); return; }
+  renderAISettings();
+  aiShowState("content");
+}
+
+function refreshMasterSwitch() {
+  const sw = document.querySelector('[data-ai-switch="master"]');
+  if (sw && aiState.settings) {
+    sw.classList.toggle("is-on", aiState.settings.enabled);
+    sw.setAttribute("aria-checked", aiState.settings.enabled ? "true" : "false");
+  }
+}
+
+/** يشغّل عملية مقفلة (يمنع الضغط المتكرر) ويعطّل زرها أثناء التنفيذ */
+async function aiGuard(key, btn, busyText, fn) {
+  if (aiState.busy.has(key)) return;
+  aiState.busy.add(key);
+  const label = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = busyText; }
+  try { await fn(); }
+  finally {
+    aiState.busy.delete(key);
+    if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = label; }
+  }
+}
+
+async function aiPatch(body) {
+  const r = await aiCall("/api/admin/ai-settings", { method: "PATCH", body });
+  if (r.ok && r.data.settings) aiState.settings = r.data.settings;
+  return r;
+}
+
+function readProviderForm(id) {
+  const card = aiCardEl(id);
+  const val = (f) => { const e = card.querySelector(`[data-ai-field="${f}"]`); return e ? e.value : ""; };
+  return {
+    apiKey: val("apiKey").trim(),
+    model: val("model").trim(),
+    maxOutputTokens: Number(val("maxOutputTokens")),
+    temperature: val("temperature") === "" ? NaN : Number(val("temperature"))
+  };
+}
+
+function isProviderFormDirty(id) {
+  const f = readProviderForm(id);
+  const p = aiState.settings.providers[id];
+  return !!f.apiKey || f.model !== p.model || f.maxOutputTokens !== p.maxOutputTokens || f.temperature !== p.temperature;
+}
+
+async function saveAIProvider(id, btn) {
+  const f = readProviderForm(id);
+  if (!f.model) return showToast("اكتب اسم النموذج.", "warning");
+  if (!Number.isInteger(f.maxOutputTokens) || f.maxOutputTokens < 50 || f.maxOutputTokens > 2000) {
+    return showToast("عدد Tokens يجب أن يكون بين 50 و2000.", "warning");
+  }
+  if (!Number.isFinite(f.temperature) || f.temperature < 0 || f.temperature > 2) {
+    return showToast("Temperature يجب أن تكون بين 0 و2.", "warning");
+  }
+  const provider = { model: f.model, maxOutputTokens: f.maxOutputTokens, temperature: f.temperature };
+  if (f.apiKey) provider.apiKey = f.apiKey;
+
+  await aiGuard("save:" + id, btn, "جارٍ الحفظ...", async () => {
+    const r = await aiPatch({ providers: { [id]: provider } });
+    if (!r.ok) return showToast(r.message, "error");   // المدخلات تبقى كما هي
+    renderAICard(id);
+    renderAIStatus();
+    showToast("تم حفظ إعدادات المزود ✅", "success");
+  });
+}
+
+async function toggleAIProvider(id, sw) {
+  const on = !aiState.settings.providers[id].enabled;
+  if (aiState.busy.has("toggle:" + id)) return;
+  aiState.busy.add("toggle:" + id);
+  const r = await aiPatch({ providers: { [id]: { enabled: on } } });
+  aiState.busy.delete("toggle:" + id);
+  if (!r.ok) return showToast(r.message, "error");
+  const p = aiState.settings.providers[id];
+  sw.classList.toggle("is-on", p.enabled);
+  sw.setAttribute("aria-checked", p.enabled ? "true" : "false");
+  const badge = aiCardEl(id).querySelector(".ai-card-title .ai-badge");
+  if (badge) { badge.textContent = p.enabled ? "مفعّل" : "معطّل"; badge.classList.toggle("is-ok", p.enabled); }
+  renderAIStatus();
+}
+
+async function toggleAIMaster(sw) {
+  if (aiState.busy.has("master")) return;
+  aiState.busy.add("master");
+  const r = await aiPatch({ enabled: !aiState.settings.enabled });
+  aiState.busy.delete("master");
+  if (!r.ok) return showToast(r.message, "error");
+  refreshMasterSwitch();
+  renderAIStatus();
+  setSwitch(aiSw, aiState.settings.enabled, "ai");   // مفتاح تبويب «إعدادات عامة»
+  settings = { ...settings, aiEnabled: aiState.settings.enabled };
+}
+
+async function saveAIGlobal(btn) {
+  const dailyLimit = Number(aiEl("stAIDailyLimit").value);
+  if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 500) {
+    return showToast("الحد اليومي يجب أن يكون بين 1 و500.", "warning");
+  }
+  await aiGuard("save:global", btn, "جارٍ الحفظ...", async () => {
+    const r = await aiPatch({ defaultProvider: aiEl("stAIDefault").value, dailyLimit });
+    if (!r.ok) return showToast(r.message, "error");
+    renderAIStatus();
+    showToast("تم حفظ الإعدادات العامة ✅", "success");
+  });
+}
+
+function askDeleteAIKey(id) {
+  const m = aiEl("stAIConfirmModal");
+  aiEl("stAIConfirmText").textContent = `سيتم حذف مفتاح ${aiState.settings.providers[id].label} نهائيًا، وسيتوقف هذا المزود عن العمل حتى تضيف مفتاحًا جديدًا.`;
+  aiState.confirmCb = () => deleteAIProviderKey(id);
+  m.classList.add("is-open");
+  m.setAttribute("aria-hidden", "false");
+}
+
+function closeAIConfirm() {
+  const m = aiEl("stAIConfirmModal");
+  m.classList.remove("is-open");
+  m.setAttribute("aria-hidden", "true");
+  aiState.confirmCb = null;
+}
+
+async function deleteAIProviderKey(id) {
+  const btn = aiEl("stAIConfirmOk");
+  await aiGuard("delete:" + id, btn, "جارٍ الحذف...", async () => {
+    const r = await aiPatch({ providers: { [id]: { deleteApiKey: true } } });
+    closeAIConfirm();
+    if (!r.ok) return showToast(r.message, "error");
+    renderAICard(id);
+    renderAIStatus();
+    showToast("تم حذف المفتاح.", "success");
+  });
+}
+
+async function testAIProvider(id, btn) {
+  if (isProviderFormDirty(id)) return showToast("لديك تغييرات غير محفوظة. احفظ المزود أولًا ثم اختبر الاتصال.", "warning");
+  const out = aiCardEl(id).querySelector("[data-ai-result]");
+  await aiGuard("test:" + id, btn, "جارٍ الاختبار...", async () => {
+    out.hidden = true;
+    const r = await aiCall("/api/admin/ai-settings/test", { method: "POST", body: { provider: id } });
+    const res = r.ok ? r.data.result : null;
+    out.hidden = false;
+    out.classList.toggle("is-ok", !!(res && res.ok));
+    if (!res) { out.textContent = r.message || "تعذّر إجراء الاختبار."; return; }
+    out.textContent = res.ok
+      ? `✅ ${res.message} (${res.latencyMs} ms) — النموذج: ${res.model}`
+      : `❌ ${res.message}${res.latencyMs ? ` (${res.latencyMs} ms)` : ""}`;
+  });
+}
+
+function bindAIPanel() {
+  const panel = aiEl("stAIPanel");
+  if (!panel) return;
+
+  panel.addEventListener("click", (e) => {
+    const sw = e.target.closest("[data-ai-switch]");
+    if (sw) return handleAISwitch(sw);
+    const btn = e.target.closest("[data-ai-action]");
+    if (!btn) return;
+    const id = btn.dataset.id;
+    switch (btn.dataset.aiAction) {
+      case "retry": loadAISettings(); break;
+      case "save-global": saveAIGlobal(btn); break;
+      case "save-provider": saveAIProvider(id, btn); break;
+      case "test": testAIProvider(id, btn); break;
+      case "delete-key": askDeleteAIKey(id); break;
+      case "edit-key": {
+        const row = aiCardEl(id).querySelector("[data-ai-keyrow]");
+        row.hidden = false;
+        row.querySelector("input").focus();
+        break;
+      }
+      case "toggle-key": {
+        const input = aiCardEl(id).querySelector('[data-ai-field="apiKey"]');
+        const show = input.type === "password";
+        input.type = show ? "text" : "password";
+        btn.textContent = show ? "إخفاء" : "إظهار";
+        break;
+      }
+    }
+  });
+
+  panel.addEventListener("keydown", (e) => {
+    const sw = e.target.closest && e.target.closest("[data-ai-switch]");
+    if (sw && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); handleAISwitch(sw); }
+  });
+
+  aiEl("stAIConfirmCancel").addEventListener("click", closeAIConfirm);
+  aiEl("stAIConfirmOk").addEventListener("click", () => { if (aiState.confirmCb) aiState.confirmCb(); });
+  aiEl("stAIConfirmModal").addEventListener("click", (e) => { if (e.target.id === "stAIConfirmModal") closeAIConfirm(); });
+}
+
+function handleAISwitch(sw) {
+  const key = sw.dataset.aiSwitch;
+  if (key === "master") toggleAIMaster(sw);
+  else if (key.startsWith("provider:")) toggleAIProvider(key.slice(9), sw);
 }
 
 
@@ -763,8 +1133,12 @@ function bindEvents() {
   bindSwitch(prayerSw,        "prayer");
   bindSwitch(aiSw,            "ai");
 
+  // إدارة الذكاء الاصطناعي
+  bindAIPanel();
+
   // Escape
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && aiEl("stAIConfirmModal").classList.contains("is-open")) closeAIConfirm();
     if (e.key === "Escape" && groupModalEl && groupModalEl.classList.contains("is-open")) {
       closeGroupModal();
     }
@@ -786,7 +1160,8 @@ async function init() {
   // تحميل متوازي
   await Promise.all([
     loadGroups(),
-    loadSettings()
+    loadSettings(),
+    loadAISettings()
   ]);
 }
 
