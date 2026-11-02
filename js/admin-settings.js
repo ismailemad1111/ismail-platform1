@@ -142,6 +142,7 @@ let groupActiveState = true;
    ============================================================ */
 
 import { backendRequest } from "./backend/index.js";
+import { calcPricing } from "./backend/bank.js";
 async function workerFetch(endpoint, options = {}) {
   // بدون Worker: التنفيذ داخل المتصفح عبر Firestore (js/backend/)
   return backendRequest(endpoint, options);
@@ -1136,6 +1137,9 @@ function bindEvents() {
   // إدارة الذكاء الاصطناعي
   bindAIPanel();
 
+  // إعدادات البنك
+  bindBankSettings();
+
   // Escape
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && aiEl("stAIConfirmModal").classList.contains("is-open")) closeAIConfirm();
@@ -1145,6 +1149,99 @@ function bindEvents() {
   });
 }
 
+
+
+/* ============================================================
+   15-ب — إعدادات بنك مستر إسماعيل (الضريبة الاختيارية)
+   الحساب النهائي يتم في Backend عند الطلب؛ المعاينة هنا للعرض فقط.
+   ============================================================ */
+
+const bankTax = { enabled: false, rate: 0, saving: false };
+
+function bankEl(id) { return document.getElementById(id); }
+
+function readBankRate() {
+  const raw = safeText(bankEl("stBankTaxRate").value);
+  if (!/^\d{1,3}(\.\d{1,2})?$/.test(raw)) return NaN;
+  return Number(raw);
+}
+
+function renderBankPreview() {
+  const box = bankEl("stBankPreview");
+  if (!box) return;
+  const base = Number(bankEl("stBankPreviewBase").value);
+  const rate = readBankRate();
+  if (!Number.isInteger(base) || base < 1 || !Number.isFinite(rate)) {
+    box.textContent = "أدخل سعرًا ونسبة صحيحين لعرض المعاينة.";
+    return;
+  }
+  const p = calcPricing(base, { enabled: bankTax.enabled && rate > 0, rate });
+  box.textContent = `السعر الأساسي: ${p.basePrice} — الضريبة: ${p.taxAmount} — الإجمالي: ${p.finalPrice}`;
+}
+
+function setBankSwitch(on) {
+  bankTax.enabled = !!on;
+  const sw = bankEl("stBankTaxSwitch");
+  sw.classList.toggle("is-on", !!on);
+  sw.setAttribute("aria-checked", on ? "true" : "false");
+  renderBankPreview();
+}
+
+async function loadBankSettings() {
+  const result = await workerFetch("/api/admin/bank/settings");
+  if (!result || !result.success) {
+    showToast("تعذر تحميل إعدادات البنك.", "error");
+    return;
+  }
+  const s = (result.data && result.data.settings) || {};
+  bankEl("stBankTaxRate").value = String(Number(s.taxRate) || 0);
+  setBankSwitch(s.taxEnabled === true);
+}
+
+async function saveBankSettings(event) {
+  event.preventDefault();
+  if (bankTax.saving) return;
+  const rate = readBankRate();
+  if (!Number.isFinite(rate) || rate < 0 || rate > 50) {
+    showToast("نسبة الضريبة يجب أن تكون رقمًا من 0 إلى 50.", "warning");
+    return;
+  }
+  if (bankTax.enabled && rate <= 0) {
+    showToast("حدّد نسبة أكبر من صفر لتفعيل الضريبة.", "warning");
+    return;
+  }
+  bankTax.saving = true;
+  const btn = bankEl("stBankSaveBtn");
+  btn.disabled = true;
+  btn.textContent = "جارٍ الحفظ...";
+  const result = await workerFetch("/api/admin/bank/settings", {
+    method: "PATCH",
+    body: { taxEnabled: bankTax.enabled, taxRate: rate }
+  });
+  bankTax.saving = false;
+  btn.disabled = false;
+  btn.textContent = "حفظ إعدادات البنك";
+  if (!result || !result.success) {
+    showToast((result && result.error && result.error.message) || "تعذر حفظ إعدادات البنك.", "error");
+    return;
+  }
+  showToast("تم حفظ إعدادات البنك. تنطبق على الطلبات الجديدة فقط.", "success");
+}
+
+function bindBankSettings() {
+  const form = bankEl("stBankForm");
+  if (!form) return;
+  form.addEventListener("submit", saveBankSettings);
+  const sw = bankEl("stBankTaxSwitch");
+  const toggle = () => setBankSwitch(!bankTax.enabled);
+  sw.addEventListener("click", toggle);
+  sw.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  });
+  bankEl("stBankTaxRate").addEventListener("input", renderBankPreview);
+  bankEl("stBankPreviewBase").addEventListener("input", renderBankPreview);
+  renderBankPreview();
+}
 
 /* ============================================================
    16 — التهيئة
@@ -1161,7 +1258,8 @@ async function init() {
   await Promise.all([
     loadGroups(),
     loadSettings(),
-    loadAISettings()
+    loadAISettings(),
+    loadBankSettings()
   ]);
 }
 
