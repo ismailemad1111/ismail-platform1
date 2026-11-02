@@ -23,6 +23,7 @@ import { barai } from "./barai/safe.js";
    01 — ثوابت وأدوات
    ============================================================ */
 
+const PAGE_SIZE = 10;
 const RETRYABLE = new Set(["NETWORK_ERROR", "TIMEOUT"]);
 const AUTO_REFRESH_AFTER_MS = 30000;
 
@@ -73,6 +74,19 @@ function fmtNum(n) {
   return Number(n || 0).toLocaleString("en-US");
 }
 
+/* السعر المعروض: الأساسي + الضريبة + النهائي (القيم من الـ Backend؛ المحسوبة هنا للعرض فقط) */
+function pricingOf(r) {
+  const base = Number(r.basePrice !== undefined ? r.basePrice : r.price) || 0;
+  const taxAmount = Number(r.taxAmount) || 0;
+  const final = Number(r.finalPrice !== undefined ? r.finalPrice : base + taxAmount) || 0;
+  return { base, taxAmount, final };
+}
+
+function debounce(fn, ms) {
+  let t = 0;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
 function newRequestKey() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
     return crypto.randomUUID().replace(/-/g, "");
@@ -101,6 +115,11 @@ const state = {
   q: "",
   sort: "default",
   afford: false,
+  availOnly: false,
+  tax: { enabled: false, rate: 0 },
+  ordersShown: PAGE_SIZE,
+  ledgerShown: PAGE_SIZE,
+  ledgerFilter: "all",
   entered: false,
   pending: null          // { reward, requestKey, busy, finished }
 };
@@ -150,14 +169,32 @@ async function loadBank({ silent = false } = {}) {
   state.wallet = data.wallet || state.wallet;
   state.ban = data.ban || null;
   state.rewards = Array.isArray(data.rewards) ? data.rewards : [];
+  state.tax = data.tax && data.tax.enabled ? { enabled: true, rate: Number(data.tax.rate) || 0 } : { enabled: false, rate: 0 };
   state.loaded = true;
   state.loadedAt = Date.now();
 
   renderBalance();
   renderBan();
   renderRewards();
+  loadHeroStats();
 
   try { baraiBank().catch(() => {}); } catch (e) { /* برعي تجميلي فقط */ }
+}
+
+/* إحصائيات البطاقة من سجل الطالب الفعلي (طلب واحد مخزَّن مؤقتًا يخدم الطلبات والسجل والبطاقة) */
+function renderHeroStats(h) {
+  const orders = (h && Array.isArray(h.orders)) ? h.orders : null;
+  $("bkStatOrders").textContent = orders ? fmtNum(orders.length) : "—";
+  $("bkStatSpent").textContent = orders
+    ? fmtNum(orders.filter((o) => o.status !== "rejected").reduce((a, o) => a + (Number(o.price) || 0), 0))
+    : "—";
+}
+
+async function loadHeroStats() {
+  try {
+    const h = await historyOnce();
+    if (h) renderHeroStats(h);
+  } catch (e) { /* إحصائيات تجميلية فقط */ }
 }
 
 /* ------------------------------------------------------------
@@ -312,53 +349,67 @@ function renderBan() {
   show(box, true);
 }
 
-function rewardCard(r) {
-  const media = el("div", { class: "bk-card-media" });
+function mediaEl(r, cls = "bk-card-media") {
+  const media = el("div", { class: cls });
   if (r.imageUrl) {
-    const img = el("img", { attrs: { src: r.imageUrl, alt: r.name, loading: "lazy" } });
+    const img = el("img", { attrs: { src: r.imageUrl, alt: r.name, loading: "lazy", decoding: "async" } });
     img.addEventListener("error", () => { img.remove(); media.appendChild(iconEl("trophy")); }); // صورة معطوبة: نعرض الأيقونة
     media.appendChild(img);
   } else {
-    media.appendChild(iconEl("trophy"));
+    media.appendChild(el("span", { class: "bk-placeholder", attrs: { "aria-hidden": "true" } }, [iconEl("trophy")]));
   }
+  return media;
+}
 
-  const av = AVAILABILITY[r.availability] || AVAILABILITY.unavailable;
-  const priceEl = el("span", { class: "bk-price" }, [
-    el("strong", { text: fmtNum(r.price) }),
+/* كتلة الأسعار: الأساسي، الضريبة (عند التفعيل)، النهائي */
+function priceBlock(r) {
+  const p = pricingOf(r);
+  const box = el("div", { class: "bk-pricebox" });
+  if (state.tax.enabled && p.taxAmount > 0) {
+    box.appendChild(el("p", { class: "bk-price-line", text: `السعر الأساسي: ${fmtNum(p.base)}` }));
+    box.appendChild(el("p", { class: "bk-price-line", text: `الضريبة (${fmtNum(state.tax.rate)}%): ${fmtNum(p.taxAmount)}` }));
+  }
+  box.appendChild(el("span", { class: "bk-price" }, [
+    el("strong", { text: fmtNum(p.final) }),
     el("span", { text: "فلوس" })
-  ]);
-  const meta = el("div", { class: "bk-card-meta" }, [
-    priceEl,
-    el("span", { class: `bk-badge ${av.cls}`, text: av.label })
-  ]);
+  ]));
+  return box;
+}
+
+function rewardCard(r) {
+  const media = mediaEl(r);
+  const av = AVAILABILITY[r.availability] || AVAILABILITY.unavailable;
+  media.appendChild(el("span", { class: `bk-badge bk-media-badge ${av.cls}`, text: av.label }));
+
+  const p = pricingOf(r);
+  const meta = el("div", { class: "bk-card-meta" }, [priceBlock(r)]);
   if (r.limited && r.availability === "available") {
     meta.appendChild(el("span", { class: "bk-stock", text: `المتبقي: ${fmtNum(r.stock)}` }));
   }
 
+  const isAvail = r.availability === "available";
   const btn = el("button", { class: "bk-btn", attrs: { type: "button" } });
-  btn.appendChild(iconEl("trophy"));
-  if (r.availability === "available" && state.wallet.isBlocked) {
-    btn.appendChild(el("span", { text: "طلب الجائزة" }));
+  if (isAvail && state.wallet.isBlocked) {
+    btn.appendChild(el("span", { text: "طلب" }));
     btn.disabled = true;
     btn.title = "أنت ممنوع حاليًا من طلب الجوائز";
-  } else if (r.availability === "available") {
-    btn.appendChild(el("span", { text: "طلب الجائزة" }));
+  } else if (isAvail) {
+    btn.appendChild(el("span", { text: "طلب" }));
     btn.addEventListener("click", () => openConfirm(r));
   } else {
     btn.appendChild(el("span", { text: av.label }));
     btn.disabled = true;
   }
+  const detailsBtn = el("button", { class: "bk-btn bk-btn--ghost", text: "التفاصيل", attrs: { type: "button" } });
+  detailsBtn.addEventListener("click", () => openDetails(r));
 
-  /* الرصيد المطلوب: من بيانات الرصيد والسعر الحقيقيين فقط */
   const bal = Number(state.wallet.balance) || 0;
-  const price = Number(r.price) || 0;
-  const isAvail = r.availability === "available";
-  const canAfford = isAvail && !state.wallet.isBlocked && price <= bal;
+  const canAfford = isAvail && !state.wallet.isBlocked && p.final <= bal;
   let need = null;
-  if (isAvail && !state.wallet.isBlocked && price > bal) {
-    const pct = price > 0 ? Math.max(0, Math.min(100, Math.floor((bal / price) * 100))) : 0;
+  if (isAvail && !state.wallet.isBlocked && p.final > bal) {
+    const pct = p.final > 0 ? Math.max(0, Math.min(100, Math.floor((bal / p.final) * 100))) : 0;
     need = el("div", { class: "bk-need" }, [
-      el("p", { class: "bk-need-text", text: `ينقصك ${fmtNum(price - bal)} فلوس` }),
+      el("p", { class: "bk-need-text", text: `ينقصك ${fmtNum(p.final - bal)} فلوس` }),
       el("div", { class: "bk-meter", attrs: { "aria-hidden": "true" } }, [el("i", { attrs: { style: `width:${pct}%` } })])
     ]);
   }
@@ -368,7 +419,7 @@ function rewardCard(r) {
     r.description ? el("p", { class: "bk-card-desc", text: r.description }) : null,
     meta,
     need,
-    btn
+    el("div", { class: "bk-card-actions" }, [detailsBtn, btn])
   ]);
   const cls = "bk-card" + (canAfford ? " is-affordable" : "") + (!isAvail ? " is-off" : "");
   return el("article", { class: cls }, [media, body]);
@@ -385,12 +436,15 @@ function visibleRewards() {
   let list = state.rewards.slice();
   const q = norm(state.q);
   if (q) list = list.filter((r) => norm(r.name).includes(q) || norm(r.description).includes(q));
+  if (state.availOnly) list = list.filter((r) => r.availability === "available");
   if (state.afford) {
     const bal = Number(state.wallet.balance) || 0;
-    list = list.filter((r) => r.availability === "available" && !state.wallet.isBlocked && Number(r.price) <= bal);
+    list = list.filter((r) => r.availability === "available" && !state.wallet.isBlocked && pricingOf(r).final <= bal);
   }
-  if (state.sort === "price-asc") list.sort((a, b) => Number(a.price) - Number(b.price));
-  else if (state.sort === "price-desc") list.sort((a, b) => Number(b.price) - Number(a.price));
+  const ts = (r) => (r.createdAt ? new Date(r.createdAt).getTime() || 0 : 0);
+  if (state.sort === "price-asc") list.sort((a, b) => pricingOf(a).final - pricingOf(b).final);
+  else if (state.sort === "price-desc") list.sort((a, b) => pricingOf(b).final - pricingOf(a).final);
+  else if (state.sort === "newest") list.sort((a, b) => ts(b) - ts(a));
   return list;
 }
 
@@ -413,7 +467,7 @@ function renderRewards() {
 
   const list = visibleRewards();
   const total = state.rewards.length;
-  const filtered = !!norm(state.q) || state.afford;
+  const filtered = !!norm(state.q) || state.afford || state.availOnly;
   if (!list.length) {
     show(grid, false);
     show($("bkNoMatch"), true);
@@ -434,9 +488,9 @@ function renderRewards() {
 }
 
 function clearFilters() {
-  state.q = ""; state.sort = "default"; state.afford = false;
+  state.q = ""; state.sort = "default"; state.afford = false; state.availOnly = false;
   $("bkSearch").value = ""; $("bkSort").value = "default";
-  const chip = $("bkAffordable"); chip.classList.remove("is-on"); chip.setAttribute("aria-pressed", "false");
+  ["bkAffordable", "bkAvailOnly"].forEach((id) => { const c = $(id); c.classList.remove("is-on"); c.setAttribute("aria-pressed", "false"); });
   renderRewards();
 }
 
@@ -488,29 +542,70 @@ function summaryRow(label, value, extra = "") {
   ]);
 }
 
+function openDetails(reward) {
+  const p = pricingOf(reward);
+  const balance = Number(state.wallet.balance) || 0;
+  const after = balance - p.final;
+  const av = AVAILABILITY[reward.availability] || AVAILABILITY.unavailable;
+
+  $("bkDetailMedia").replaceChildren(...mediaEl(reward, "bk-detail-img").childNodes);
+  $("bkDetailName").textContent = reward.name;
+  $("bkDetailDesc").textContent = reward.description || "لا يوجد وصف لهذه الجائزة.";
+
+  const rows = [summaryRow("السعر الأساسي", `${fmtNum(p.base)} فلوس`)];
+  if (state.tax.enabled && p.taxAmount > 0) rows.push(summaryRow(`الضريبة (${fmtNum(state.tax.rate)}%)`, `${fmtNum(p.taxAmount)} فلوس`));
+  rows.push(summaryRow("السعر النهائي", `${fmtNum(p.final)} فلوس`, "is-total"));
+  rows.push(summaryRow("حالة التوفر", av.label));
+  if (reward.limited) rows.push(summaryRow("المخزون", `${fmtNum(reward.stock)}`));
+  rows.push(summaryRow("رصيدك الحالي", `${fmtNum(balance)} فلوس`));
+  rows.push(after >= 0 ? summaryRow("رصيدك بعد الشراء", `${fmtNum(after)} فلوس`) : summaryRow("النقص في رصيدك", `${fmtNum(-after)} فلوس`));
+  $("bkDetailSummary").replaceChildren(...rows);
+
+  const orderBtn = $("bkDetailOrder");
+  const can = reward.availability === "available" && !state.wallet.isBlocked;
+  orderBtn.disabled = !can;
+  orderBtn.textContent = can ? "طلب الجائزة" : (state.wallet.isBlocked ? "ممنوع من الطلب" : av.label);
+  state.detail = reward;
+  setOverlay("bkDetailOverlay", true);
+  focusSoon($("bkDetailBack"));
+}
+
+function closeDetails() {
+  setOverlay("bkDetailOverlay", false);
+  state.detail = null;
+}
+
 function openConfirm(reward) {
   if (state.pending && state.pending.busy) return;
   if (state.wallet.isBlocked) {
     showToast("أنت ممنوع حاليًا من طلب الجوائز.", "warning");
     return;
   }
+  setOverlay("bkDetailOverlay", false);
 
   state.pending = { reward, requestKey: newRequestKey(), busy: false, finished: false };
 
+  const p = pricingOf(reward);
   const balance = Number(state.wallet.balance) || 0;
-  const after = balance - reward.price;
+  const after = balance - p.final;
   const summary = $("bkConfirmSummary");
-  summary.replaceChildren(
+  const rows = [
     el("div", { class: "bk-summary-row" }, [
       el("span", { text: "الجائزة" }),
       el("span", { text: reward.name, attrs: { style: "font-weight:700;text-align:end" } })
     ]),
-    summaryRow("السعر", `${fmtNum(reward.price)} فلوس`),
+    summaryRow("السعر الأساسي", `${fmtNum(p.base)} فلوس`)
+  ];
+  if (state.tax.enabled && p.taxAmount > 0) rows.push(summaryRow(`الضريبة (${fmtNum(state.tax.rate)}%)`, `${fmtNum(p.taxAmount)} فلوس`));
+  rows.push(
+    summaryRow("الإجمالي النهائي", `${fmtNum(p.final)} فلوس`, "is-total"),
     summaryRow("رصيدك الحالي", `${fmtNum(balance)} فلوس`),
+    summaryRow("المبلغ المطلوب", `${fmtNum(p.final)} فلوس`),
     after >= 0
-      ? summaryRow("رصيدك بعد الخصم", `${fmtNum(after)} فلوس`, "is-total")
+      ? summaryRow("رصيدك المتبقي", `${fmtNum(after)} فلوس`, "is-total")
       : summaryRow("النقص في رصيدك", `${fmtNum(-after)} فلوس`, "is-total")
   );
+  summary.replaceChildren(...rows);
 
   const note = $("bkConfirmNote");
   if (after < 0) {
@@ -559,6 +654,11 @@ async function confirmOrder() {
   const p = state.pending;
   if (!p || p.busy || p.finished) return;
 
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    showConfirmMessage("لا يوجد اتصال بالإنترنت. تأكد من اتصالك ثم أعد المحاولة؛ لم يُخصم أي رصيد.");
+    return;
+  }
+
   p.busy = true;
   const okBtn = $("bkConfirmOk");
   const backBtn = $("bkConfirmBack");
@@ -571,7 +671,7 @@ async function confirmOrder() {
   const res = await orderBankReward({
     rewardId: p.reward.id,
     requestKey: p.requestKey,
-    expectedPrice: p.reward.price
+    expectedPrice: pricingOf(p.reward).final
   });
 
   p.busy = false;
@@ -591,11 +691,12 @@ async function confirmOrder() {
       const o = res.data.order || {};
       showResult(
         "تم تسجيل طلبك",
-        `طلبت «${o.rewardName || p.reward.name}» بسعر ${fmtNum(o.price || p.reward.price)} فلوس، ` +
+        `طلبت «${o.rewardName || p.reward.name}» بإجمالي ${fmtNum(o.price || pricingOf(p.reward).final)} فلوس، ` +
         `ورصيدك الآن ${fmtNum(res.data.balance)} فلوس. ستجد حالة الطلب في تبويب «طلباتي».`
       );
     }
     ordersCache = null; ledgerCache = null;
+    historyInFlight = null;
     await loadBank({ silent: true });
     return;
   }
@@ -647,6 +748,56 @@ function rowEl({ title, sub, sideTop, sideBottom, kind, icon }) {
   ]);
 }
 
+const ORDER_FLOW = ["pending", "accepted", "ready", "delivered"];
+
+function orderTimeline(o) {
+  const rejected = o.status === "rejected";
+  const idx = ORDER_FLOW.indexOf(o.status);
+  const wrap = el("ol", { class: "bk-steps" + (rejected ? " is-rejected" : "") });
+  ORDER_FLOW.forEach((k, i) => {
+    const done = !rejected && idx >= i;
+    const cur = !rejected && idx === i;
+    wrap.appendChild(el("li", {
+      class: "bk-step" + (done ? " is-done" : "") + (cur ? " is-current" : ""),
+      text: ORDER_STATUS[k].label
+    }));
+  });
+  return wrap;
+}
+
+function orderCard(o) {
+  const st = ORDER_STATUS[o.status] || { label: o.status, cls: "" };
+  const reward = state.rewards.find((r) => String(r.id) === String(o.rewardId));
+  const thumb = mediaEl({ name: o.rewardName || "جائزة", imageUrl: reward ? reward.imageUrl : "" }, "bk-order-thumb");
+
+  const lines = [];
+  /* طلبات قديمة بلا ضريبة: تظهر بالمبلغ المدفوع فقط */
+  if (Number(o.taxAmount) > 0) {
+    lines.push(summaryRow("السعر الأساسي", `${fmtNum(o.basePrice)} فلوس`));
+    lines.push(summaryRow(`الضريبة (${fmtNum(o.taxRate)}%)`, `${fmtNum(o.taxAmount)} فلوس`));
+  }
+  lines.push(summaryRow("المدفوع", `${fmtNum(o.price)} فلوس`, "is-total"));
+
+  const shortId = String(o.id || "").split("_").pop().slice(-8).toUpperCase();
+  const head = el("div", { class: "bk-order-head" }, [
+    thumb,
+    el("div", { class: "bk-order-main" }, [
+      el("h3", { class: "bk-order-name", text: o.rewardName || "جائزة" }),
+      el("p", { class: "bk-row-sub", text: `${formatDate(o.createdAt)} — رقم الطلب: ${shortId}` })
+    ]),
+    el("span", { class: `bk-badge ${st.cls}`, text: st.label })
+  ]);
+
+  const kids = [head, orderTimeline(o), el("div", { class: "bk-summary bk-summary--sm" }, lines)];
+  if (o.status === "rejected") {
+    kids.push(el("p", { class: "bk-order-reject", text: o.rejectReason ? `سبب الرفض: ${o.rejectReason}` : "تم رفض هذا الطلب." }));
+    kids.push(el("p", { class: "bk-order-refund", text: o.refunded
+      ? `تم استرجاع ${fmtNum(o.price)} فلوس إلى رصيدك.`
+      : "سيتم استرجاع المبلغ إلى رصيدك." }));
+  }
+  return el("article", { class: `bk-order bk-order--${o.status}` }, kids);
+}
+
 function renderOrders(data) {
   const list = $("bkOrdersList");
   list.replaceChildren();
@@ -654,26 +805,50 @@ function renderOrders(data) {
   show($("bkOrdersError"), false);
   if (!data.orders.length) {
     show(list, false);
+    show($("bkOrdersMore"), false);
     show($("bkOrdersEmpty"), true);
     return;
   }
   show($("bkOrdersEmpty"), false);
-  data.orders.forEach((o) => {
-    const st = ORDER_STATUS[o.status] || { label: o.status, cls: "" };
-    let sub = formatDate(o.createdAt);
-    if (o.status === "rejected") {
-      sub += o.rejectReason ? ` — سبب الرفض: ${o.rejectReason}` : "";
-      sub += " — تم استرجاع المبلغ إلى رصيدك.";
-    }
-    list.appendChild(rowEl({
-      title: o.rewardName || "جائزة",
-      sub,
-      kind: (ORDER_LOOK[o.status] || [])[0], icon: (ORDER_LOOK[o.status] || [])[1],
-      sideTop: el("span", { class: "bk-amount", text: `${fmtNum(o.price)}` }),
-      sideBottom: el("span", { class: `bk-badge ${st.cls}`, text: st.label })
-    }));
-  });
+  data.orders.slice(0, state.ordersShown).forEach((o) => list.appendChild(orderCard(o)));
   show(list, true);
+  show($("bkOrdersMore"), data.orders.length > state.ordersShown);
+}
+
+function ledgerItems(data) {
+  const f = state.ledgerFilter;
+  const items = [];
+  data.transactions.forEach((t) => {
+    if (f !== "all" && t.type !== f) return;
+    items.push({
+      at: t.createdAt,
+      node: rowEl({
+        kind: (TX_LOOK[t.type] || [])[0], icon: (TX_LOOK[t.type] || [])[1],
+        title: TX_TYPE[t.type] || "معاملة",
+        sub: `${t.reason ? t.reason + " — " : ""}${formatDate(t.createdAt)} — الرصيد: ${fmtNum(t.balanceBefore)} ← ${fmtNum(t.balanceAfter)}`,
+        sideTop: el("span", {
+          class: `bk-amount ${t.amount >= 0 ? "is-plus" : "is-minus"}`,
+          text: `${t.amount >= 0 ? "+" : "−"}${fmtNum(Math.abs(t.amount))}`
+        })
+      })
+    });
+  });
+  if (f === "all") {
+    data.bans.forEach((b) => {
+      const lifted = b.status === "lifted";
+      items.push({
+        at: b.startsAt,
+        node: rowEl({
+          kind: "bad", icon: "forbidden",
+          title: "منع من طلب الجوائز",
+          sub: `بسبب طلب «${b.rewardName}» (${fmtNum(b.price)}) برصيد ${fmtNum(b.balanceAtAttempt)} — من ${formatDate(b.startsAt)} إلى ${formatDate(b.endsAt)}`,
+          sideBottom: el("span", { class: `bk-badge ${lifted ? "bk-badge--ok" : "bk-badge--bad"}`, text: lifted ? "تم رفعه" : "منع" })
+        })
+      });
+    });
+  }
+  items.sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+  return items;
 }
 
 function renderLedger(data) {
@@ -682,41 +857,17 @@ function renderLedger(data) {
   show($("bkLedgerLoading"), false);
   show($("bkLedgerError"), false);
 
-  const items = [];
-  data.transactions.forEach((t) => items.push({
-    at: t.createdAt,
-    node: rowEl({
-      kind: (TX_LOOK[t.type] || [])[0], icon: (TX_LOOK[t.type] || [])[1],
-      title: TX_TYPE[t.type] || "معاملة",
-      sub: `${t.reason ? t.reason + " — " : ""}${formatDate(t.createdAt)} — الرصيد: ${fmtNum(t.balanceBefore)} ← ${fmtNum(t.balanceAfter)}`,
-      sideTop: el("span", {
-        class: `bk-amount ${t.amount >= 0 ? "is-plus" : "is-minus"}`,
-        text: `${t.amount >= 0 ? "+" : "−"}${fmtNum(Math.abs(t.amount))}`
-      })
-    })
-  }));
-  data.bans.forEach((b) => {
-    const lifted = b.status === "lifted";
-    items.push({
-      at: b.startsAt,
-      node: rowEl({
-        kind: "bad", icon: "forbidden",
-        title: "منع من طلب الجوائز",
-        sub: `بسبب طلب «${b.rewardName}» (${fmtNum(b.price)}) برصيد ${fmtNum(b.balanceAtAttempt)} — من ${formatDate(b.startsAt)} إلى ${formatDate(b.endsAt)}`,
-        sideBottom: el("span", { class: `bk-badge ${lifted ? "bk-badge--ok" : "bk-badge--bad"}`, text: lifted ? "تم رفعه" : "منع" })
-      })
-    });
-  });
-  items.sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
-
+  const items = ledgerItems(data);
   if (!items.length) {
     show(list, false);
+    show($("bkLedgerMore"), false);
     show($("bkLedgerEmpty"), true);
     return;
   }
   show($("bkLedgerEmpty"), false);
-  items.forEach((i) => list.appendChild(i.node));
+  items.slice(0, state.ledgerShown).forEach((i) => list.appendChild(i.node));
   show(list, true);
+  show($("bkLedgerMore"), items.length > state.ledgerShown);
 }
 
 async function loadOrdersTab() {
@@ -732,6 +883,7 @@ async function loadOrdersTab() {
     return;
   }
   ordersCache = data; ledgerCache = data;
+  renderHeroStats(data);
   renderOrders(data);
 }
 
@@ -748,6 +900,7 @@ async function loadLedgerTab() {
     return;
   }
   ordersCache = data; ledgerCache = data;
+  renderHeroStats(data);
   renderLedger(data);
 }
 
@@ -761,8 +914,8 @@ function switchTab(tab) {
   show($("bkPanelRewards"), tab === "rewards");
   show($("bkPanelOrders"), tab === "orders");
   show($("bkPanelLedger"), tab === "ledger");
-  if (tab === "orders") loadOrdersTab();
-  if (tab === "ledger") loadLedgerTab();
+  if (tab === "orders") { state.ordersShown = PAGE_SIZE; loadOrdersTab(); }
+  if (tab === "ledger") { state.ledgerShown = PAGE_SIZE; loadLedgerTab(); }
   if (tab === "rewards" && state.loaded && Date.now() - state.loadedAt > AUTO_REFRESH_AFTER_MS) {
     loadBank({ silent: true });
   }
@@ -796,7 +949,34 @@ function bindEvents() {
     if (e.target === $("bkResultOverlay")) setOverlay("bkResultOverlay", false);
   });
 
-  $("bkSearch").addEventListener("input", (e) => { state.q = e.target.value; renderRewards(); });
+  const doSearch = debounce(() => renderRewards(), 250);   // بحث محلي بلا أي طلب شبكة
+  $("bkSearch").addEventListener("input", (e) => { state.q = e.target.value; doSearch(); });
+  $("bkAvailOnly").addEventListener("click", (e) => {
+    state.availOnly = !state.availOnly;
+    e.currentTarget.classList.toggle("is-on", state.availOnly);
+    e.currentTarget.setAttribute("aria-pressed", state.availOnly ? "true" : "false");
+    renderRewards();
+  });
+  $("bkHeroRefresh").addEventListener("click", () => $("bkRefreshBtn").click());
+  $("bkHeroLedger").addEventListener("click", () => switchTab("ledger"));
+  $("bkOrdersMore").addEventListener("click", () => { state.ordersShown += PAGE_SIZE; if (ordersCache) renderOrders(ordersCache); });
+  $("bkLedgerMore").addEventListener("click", () => { state.ledgerShown += PAGE_SIZE; if (ledgerCache) renderLedger(ledgerCache); });
+  document.querySelectorAll("[data-lf]").forEach((b) => {
+    b.addEventListener("click", () => {
+      state.ledgerFilter = b.dataset.lf;
+      state.ledgerShown = PAGE_SIZE;
+      document.querySelectorAll("[data-lf]").forEach((x) => {
+        const on = x === b;
+        x.classList.toggle("is-on", on);
+        x.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+      if (ledgerCache) renderLedger(ledgerCache);
+    });
+  });
+  $("bkDetailClose").addEventListener("click", closeDetails);
+  $("bkDetailBack").addEventListener("click", closeDetails);
+  $("bkDetailOrder").addEventListener("click", () => { if (state.detail) openConfirm(state.detail); });
+  $("bkDetailOverlay").addEventListener("click", (e) => { if (e.target === $("bkDetailOverlay")) closeDetails(); });
   $("bkSort").addEventListener("change", (e) => { state.sort = e.target.value; renderRewards(); });
   $("bkAffordable").addEventListener("click", (e) => {
     state.afford = !state.afford;
@@ -810,6 +990,7 @@ function bindEvents() {
     if (e.key === "Tab") { trapTab(e); return; }
     if (e.key !== "Escape") return;
     if ($("bkResultOverlay").classList.contains("is-open")) setOverlay("bkResultOverlay", false);
+    else if ($("bkDetailOverlay").classList.contains("is-open")) closeDetails();
     else if ($("bkConfirmOverlay").classList.contains("is-open")) closeConfirm();
   });
 
