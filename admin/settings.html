@@ -708,6 +708,36 @@
       .adm-content { padding: 20px; }
     }
 
+
+    /* =========================================================
+       AI MANAGEMENT
+       ========================================================= */
+    .ai-status { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 14px; }
+    .ai-stat { padding: 10px 12px; border-radius: 12px; background: var(--color-surface); border: 1px solid var(--color-border); min-width: 0; }
+    .ai-stat-label { font-size: 11px; font-weight: 600; color: var(--color-text-muted); }
+    .ai-stat-value { margin-top: 3px; font-size: 13px; font-weight: 800; color: var(--color-text); overflow-wrap: anywhere; }
+    .ai-card { margin-bottom: 14px; }
+    .ai-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+    .ai-card-title { margin: 0; font-size: 15px; font-weight: 800; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .ai-badge { font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 999px; background: var(--color-red-light); color: var(--color-red-dark); }
+    .ai-badge.is-ok { background: var(--color-green-light); color: var(--color-green-dark); }
+    .ai-key-row { display: flex; gap: 6px; }
+    .ai-key-row .st-input { flex: 1; min-width: 0; direction: ltr; text-align: left; }
+    .ai-key-state { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 12px; font-weight: 700; }
+    .ai-grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 14px; }
+    .ai-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .ai-actions .st-btn { flex: 1; min-width: 120px; }
+    .ai-danger { color: var(--color-red-dark); }
+    .ai-result { margin-top: 10px; padding: 10px 12px; border-radius: 10px; font-size: 12px; font-weight: 700; line-height: 1.6; background: var(--color-red-light); color: var(--color-red-dark); }
+    .ai-result.is-ok { background: var(--color-green-light); color: var(--color-green-dark); }
+    .ai-result[hidden] { display: none; }
+    .ai-error { padding: 16px; text-align: center; border-radius: 14px; background: var(--color-surface); border: 1px solid var(--color-border); }
+    @media (min-width: 700px) {
+      .ai-status { grid-template-columns: repeat(3, 1fr); }
+      .ai-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    .adm-modal-overlay[data-ai-confirm] .adm-modal { max-width: 360px; }
+
     @media (prefers-reduced-motion: reduce) {
       .st-group,
       .st-tab,
@@ -773,6 +803,16 @@
         >
           <span aria-hidden="true"><span class="icon icon-settings" aria-hidden="true"></span></span>
           <span>إعدادات عامة</span>
+        </button>
+        <button
+          type="button"
+          class="st-tab"
+          data-tab="ai"
+          role="tab"
+          aria-selected="false"
+        >
+          <span aria-hidden="true"><span class="icon icon-settings" aria-hidden="true"></span></span>
+          <span>إدارة الذكاء الاصطناعي</span>
         </button>
       </div>
 
@@ -955,7 +995,32 @@
 
       </section>
 
+      <!-- ======================================================
+           PANEL 3 — AI Management (يُرسم بالكامل من js/admin-settings.js)
+           ====================================================== -->
+      <section class="st-panel" data-panel="ai" id="stAIPanel">
+        <div id="stAILoading" class="st-hint" style="padding:16px;text-align:center;">جارٍ تحميل إعدادات الذكاء الاصطناعي...</div>
+        <div id="stAIError" class="ai-error" hidden>
+          <p class="st-hint" id="stAIErrorMsg" style="margin:0 0 10px;">تعذّر تحميل الإعدادات.</p>
+          <button type="button" class="st-btn st-btn--ghost" data-ai-action="retry">إعادة المحاولة</button>
+        </div>
+        <div id="stAIContent" hidden></div>
+      </section>
+
     </main>
+
+
+    <!-- AI: تأكيد حذف مفتاح -->
+    <div class="adm-modal-overlay" id="stAIConfirmModal" data-ai-confirm role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="stAIConfirmTitle">
+      <div class="adm-modal">
+        <h2 class="adm-modal-title" id="stAIConfirmTitle">حذف مفتاح API</h2>
+        <p class="adm-modal-sub" id="stAIConfirmText"></p>
+        <div class="adm-modal-actions" style="display:flex;gap:8px;margin-top:14px;">
+          <button type="button" class="st-btn st-btn--ghost" id="stAIConfirmCancel" style="flex:1;">إلغاء</button>
+          <button type="button" class="st-btn st-btn--primary" id="stAIConfirmOk" style="flex:1;">حذف</button>
+        </div>
+      </div>
+    </div>
 
     <!-- ============================================================
          GROUP MODAL (Create / Edit)
