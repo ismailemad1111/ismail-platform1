@@ -1,16 +1,18 @@
 /* ============================================================
-   js/backend/ai.js — المساعد الذكي (جهة الطالب)
+   js/backend/ai.js — المساعد الذكي (محرك المزودين + محادثة الطالب)
    ------------------------------------------------------------
-   الإعداد من مستند Firestore:  settings/ai
-     apiKey   : مفتاح المزوّد (نص)         ← مطلوب
-     provider : "gemini" | "openai"         (الافتراضي gemini)
-     model    : اسم النموذج                 (اختياري)
-     dailyLimit : الحد اليومي لكل طالب      (الافتراضي 20)
-     maxOutputTokens : (الافتراضي 1000)
-   وتفعيل/تعطيل الخدمة من settings/general ← aiEnabled.
+   الإعداد من مستند Firestore:  settings/ai  (يُدار من لوحة الإدارة)
+     enabled, defaultProvider, dailyLimit,
+     providers.{gemini|openai|deepseek}.{enabled, apiKey, model,
+                                         maxOutputTokens, temperature}
+   الصيغة القديمة (provider/model/apiKey/maxOutputTokens في الجذر)
+   ما زالت تُقرأ تلقائيًا عبر normalizeAiConfig() ولا تُفقد.
+   وتفعيل/تعطيل الخدمة من settings/general ← aiEnabled (يُزامَن مع enabled).
 
-   ⚠️ المفتاح داخل Firestore يستطيع أي شخص قراءته. استخدم مفتاح
-   Gemini المجاني (لا توجد فاتورة) وليس مفتاحًا مدفوعًا.
+   إضافة مزود جديد: أضف مدخلًا في AI_PROVIDERS (build + extract).
+
+   ⚠️ الاتصال مباشر من المتصفح، فمفاتيح settings/ai يستطيع أي طالب مفعّل
+   قراءتها (بما فيها مزودات غير مفعّلة). استخدم مفاتيح مجانية/محدودة الحصة.
    ============================================================ */
 
 import {
@@ -21,8 +23,189 @@ import {
 const AI_MAX_MESSAGES = 20;
 const AI_MAX_MESSAGE_CHARS = 4000;
 const AI_ALLOWED_ROLES = new Set(["user", "assistant"]);
-const AI_DEFAULT_MAX_OUTPUT_TOKENS = 1000;
+const AI_DEFAULT_MAX_OUTPUT_TOKENS = 1500;
+const AI_DEFAULT_TEMPERATURE = 0.7;
 const AI_TIMEOUT_MS = 55000;
+const AI_SYSTEM_PROMPT = "أنت مساعد تعليمي عربي للمنصة. اشرح بلغة بسيطة.";
+
+/* ---------------- المزودون (Adapters) ---------------- */
+
+export const AI_PROVIDERS = {
+  gemini: {
+    label: "Google Gemini",
+    defaultModel: "gemini-2.5-flash",
+    defaultEnabled: true,
+    // المفتاح في الترويسة وليس في الرابط حتى لا يظهر في السجلات/الأخطاء
+    build: (c) => ({
+      url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(c.model)}:generateContent`,
+      headers: { "Content-Type": "application/json", "x-goog-api-key": c.apiKey },
+      payload: {
+        systemInstruction: { parts: [{ text: AI_SYSTEM_PROMPT }] },
+        contents: c.messages.map((m) => ({
+          role: m.role === "assistant" ? "model" : "user",
+          parts: [{ text: m.content }]
+        })),
+        generationConfig: { maxOutputTokens: c.maxOutputTokens, temperature: c.temperature }
+      }
+    }),
+    extract: (d) => {
+      const parts = d && d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts;
+      return safeText(Array.isArray(parts) ? parts.map((p) => p.text || "").join("") : "");
+    },
+    isValid: (d) => !!(d && typeof d === "object" && (Array.isArray(d.candidates) || d.usageMetadata))
+  },
+  openai: {
+    label: "OpenAI",
+    defaultModel: "gpt-4o-mini",
+    defaultEnabled: false,
+    build: (c) => chatCompletionsRequest("https://api.openai.com/v1/chat/completions", c),
+    extract: extractChatCompletion,
+    isValid: (d) => !!(d && Array.isArray(d.choices))
+  },
+  deepseek: {
+    label: "DeepSeek",
+    defaultModel: "deepseek-chat",
+    defaultEnabled: false,
+    build: (c) => chatCompletionsRequest("https://api.deepseek.com/chat/completions", c),
+    extract: extractChatCompletion,
+    isValid: (d) => !!(d && Array.isArray(d.choices))
+  }
+};
+export const AI_PROVIDER_IDS = Object.keys(AI_PROVIDERS);
+
+function chatCompletionsRequest(url, c) {
+  return {
+    url,
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${c.apiKey}` },
+    payload: {
+      model: c.model,
+      messages: [{ role: "system", content: AI_SYSTEM_PROMPT }, ...c.messages],
+      temperature: c.temperature,
+      max_tokens: c.maxOutputTokens
+    }
+  };
+}
+function extractChatCompletion(d) {
+  return safeText(d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content);
+}
+
+/** خطأ مزود مصنَّف — message آمنة للعرض ولا تحوي المفتاح أبدًا */
+export class ProviderError extends Error {
+  constructor(kind, message, status) {
+    super(message);
+    this.kind = kind;
+    this.status = status || 0;
+  }
+}
+
+function classifyHttpError(status, text) {
+  const t = String(text || "");
+  if (status === 401 || status === 403 || /API_KEY_INVALID|API key not valid|invalid_api_key/i.test(t)) {
+    return new ProviderError("auth", "مفتاح API غير صحيح أو غير مصرّح به.", status);
+  }
+  if (status === 402 || /insufficient_quota|insufficient balance|billing|exceeded your current quota/i.test(t)) {
+    return new ProviderError("quota", "الرصيد أو الحصة غير كافيين.", status);
+  }
+  if (status === 429) return new ProviderError("rate", "تم تجاوز معدل الطلبات المسموح. حاول بعد قليل.", status);
+  if (status === 404 || (status === 400 && /model/i.test(t) && /not found|does not exist|not supported|invalid/i.test(t))) {
+    return new ProviderError("model", "النموذج غير موجود أو غير مدعوم لهذا المفتاح.", status);
+  }
+  if (status >= 500) return new ProviderError("unavailable", "مزود الذكاء الاصطناعي غير متاح حاليًا.", status);
+  return new ProviderError("invalid", `رفض المزود الطلب (${status}).`, status);
+}
+
+/**
+ * ينفّذ طلبًا واحدًا إلى المزود.
+ * conf: { apiKey, model, temperature, maxOutputTokens, messages }
+ * يعيد { reply, latencyMs } أو يرمي ProviderError(kind: auth|quota|rate|model|network|timeout|unavailable|invalid)
+ */
+export async function callProvider(providerId, conf, timeoutMs = AI_TIMEOUT_MS) {
+  const adapter = AI_PROVIDERS[providerId];
+  if (!adapter) throw new ProviderError("invalid", "مزود AI غير مدعوم.");
+  const { url, headers, payload } = adapter.build(conf);
+
+  const started = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), signal: controller.signal });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e && e.name === "AbortError") throw new ProviderError("timeout", "انتهت مهلة الاتصال بالمزود.");
+    throw new ProviderError("network", "تعذّر الاتصال بمزود AI.");
+  }
+  clearTimeout(timer);
+
+  if (!res.ok) {
+    let detail = "";
+    try { detail = await res.text(); } catch (e) { /* تجاهل */ }
+    const err = classifyHttpError(res.status, detail);
+    console.error("[ai] provider error", providerId, res.status, err.kind);
+    throw err;
+  }
+
+  let data;
+  try { data = await res.json(); } catch (e) { data = null; }
+  if (!adapter.isValid(data)) throw new ProviderError("invalid", "استجابة AI غير صالحة.", res.status);
+  return { reply: adapter.extract(data), latencyMs: Date.now() - started };
+}
+
+/* ---------------- قراءة الإعدادات (مع الترقية من الصيغة القديمة) ---------------- */
+
+function num(v, fallback) {
+  const n = typeof v === "number" ? v : parseFloat(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * يحوّل مستند settings/ai (قديم أو جديد) إلى بنية موحّدة.
+ * لا يكتب شيئًا؛ القراءة وحدها تعمل قبل الترحيل وبعده.
+ */
+export function normalizeAiConfig(raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const hasProviders = !!(r.providers && typeof r.providers === "object");
+  const legacyId = safeText(r.provider).toLowerCase();
+  const legacyProvider = AI_PROVIDERS[legacyId] ? legacyId : "gemini";
+
+  const providers = {};
+  for (const id of AI_PROVIDER_IDS) {
+    const meta = AI_PROVIDERS[id];
+    const src = hasProviders && r.providers[id] && typeof r.providers[id] === "object" ? r.providers[id] : {};
+    const legacy = !hasProviders && id === legacyProvider ? r : {};
+    const pick = (k) => (src[k] !== undefined ? src[k] : legacy[k]);
+    providers[id] = {
+      enabled: typeof src.enabled === "boolean" ? src.enabled : (hasProviders ? meta.defaultEnabled : id === legacyProvider),
+      apiKey: safeText(pick("apiKey")),
+      model: safeText(pick("model")) || meta.defaultModel,
+      maxOutputTokens: clamp(parseInt(pick("maxOutputTokens"), 10) || AI_DEFAULT_MAX_OUTPUT_TOKENS, 50, 2000),
+      temperature: clamp(num(pick("temperature"), AI_DEFAULT_TEMPERATURE), 0, 2)
+    };
+  }
+  const wanted = safeText(r.defaultProvider).toLowerCase();
+  return {
+    migrated: hasProviders,
+    enabled: r.enabled !== false,
+    defaultProvider: hasProviders ? (AI_PROVIDERS[wanted] ? wanted : "gemini") : legacyProvider,
+    dailyLimit: clamp(parseInt(r.dailyLimit, 10) || 20, 1, 500),
+    providers
+  };
+}
+
+/** رسالة جاهزية المزود (null = جاهز) — تُستخدم للمحادثة والاختبار */
+export function providerReadiness(conf) {
+  if (!conf.enabled) return "هذا المزود غير مفعّل.";
+  if (!conf.apiKey) return "لم يُضبط مفتاح API لهذا المزود.";
+  if (!conf.model) return "لم يُحدد النموذج.";
+  return null;
+}
+
+const STUDENT_PROVIDER_MESSAGES = {
+  timeout: ["TIMEOUT", "الخدمة تأخرت. حاول مرة أخرى."],
+  network: ["SERVER_ERROR", "خطأ في الاتصال بمزود AI."],
+  rate: ["SERVER_ERROR", "الخدمة مزدحمة الآن. حاول بعد قليل."],
+  invalid: ["SERVER_ERROR", "استجابة AI غير صالحة."]
+};
 
 function validateMessages(list) {
   if (!Array.isArray(list)) bad("BAD_REQUEST", "قائمة الرسائل غير صحيحة.");
@@ -57,23 +240,17 @@ route("POST", "/api/ai/chat", async ({ body }) => {
   const messages = validateMessages(body.messages);
 
   const general = await getDocData("settings", "general");
-  if (general && general.aiEnabled === false) {
+  const cfg = normalizeAiConfig(await getDocData("settings", "ai"));
+  if ((general && general.aiEnabled === false) || !cfg.enabled) {
     bad("AI_DISABLED", "خدمة الذكاء الاصطناعي متوقفة حاليًا.");
   }
 
-  const cfg = (await getDocData("settings", "ai")) || {};
-  const apiKey = safeText(cfg.apiKey);
-  if (!apiKey) bad("SERVER_ERROR", "خدمة AI غير مفعّلة حاليًا (لم يُضبط المفتاح).");
-
-  const provider = (safeText(cfg.provider) || "gemini").toLowerCase();
-  if (provider !== "gemini" && provider !== "openai") {
-    bad("SERVER_ERROR", "مزود AI غير مدعوم.");
-  }
-  const dailyLimit = clamp(parseInt(cfg.dailyLimit || "20", 10), 1, 500);
-  const maxOutputTokens = clamp(
-    parseInt(cfg.maxOutputTokens || String(AI_DEFAULT_MAX_OUTPUT_TOKENS), 10) || AI_DEFAULT_MAX_OUTPUT_TOKENS,
-    50, 2000
-  );
+  const provider = cfg.defaultProvider;
+  if (!AI_PROVIDERS[provider]) bad("SERVER_ERROR", "مزود AI غير مدعوم.");
+  const pconf = cfg.providers[provider];
+  if (!pconf.enabled) bad("SERVER_ERROR", "مزود الذكاء الاصطناعي الحالي غير مفعّل.");
+  if (providerReadiness(pconf)) bad("SERVER_ERROR", "خدمة AI غير مفعّلة حاليًا (لم يُضبط المفتاح).");
+  const dailyLimit = cfg.dailyLimit;
 
   /* ---- حجز حصة اليوم (Transaction) ---- */
   // اليوم بحسب توقيت القاهرة، حتى لا يتغير الحد اليومي عند منتصف الليل UTC.
@@ -114,77 +291,16 @@ route("POST", "/api/ai/chat", async ({ body }) => {
     } catch (e) { /* لا يؤثر */ }
   };
 
-  /* ---- بناء طلب المزوّد ---- */
-  let url = "";
-  const headers = { "Content-Type": "application/json" };
-  let payload = {};
-
-  if (provider === "openai") {
-    url = "https://api.openai.com/v1/chat/completions";
-    headers["Authorization"] = `Bearer ${apiKey}`;
-    payload = {
-      model: safeText(cfg.model) || "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "أنت مساعد تعليمي عربي للمنصة. اشرح بلغة بسيطة." },
-        ...messages
-      ],
-      temperature: 0.7,
-      max_tokens: maxOutputTokens
-    };
-  } else {
-    const model = safeText(cfg.model) || "gemini-2.5-flash";
-    url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-    payload = {
-      systemInstruction: { parts: [{ text: "أنت مساعد تعليمي عربي للمنصة. اشرح بلغة بسيطة." }] },
-      contents: messages.map((m) => ({
-        role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.content }]
-      })),
-      generationConfig: { maxOutputTokens }
-    };
-  }
-
-  /* ---- النداء ---- */
-  let res;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-  } catch (e) {
-    clearTimeout(timer);
-    await release();
-    if (e && e.name === "AbortError") bad("TIMEOUT", "الخدمة تأخرت. حاول مرة أخرى.");
-    bad("SERVER_ERROR", "خطأ في الاتصال بمزود AI.");
-  }
-  clearTimeout(timer);
-
-  if (!res.ok) {
-    let detail = "";
-    try { detail = await res.text(); } catch (e) { /* تجاهل */ }
-    console.error("[ai] provider error", res.status, detail.slice(0, 500));
-    await release();
-    bad("SERVER_ERROR", `خطأ من مزود AI (${res.status}).`);
-  }
-
-  let data;
-  try {
-    data = await res.json();
-  } catch (e) {
-    await release();
-    bad("SERVER_ERROR", "استجابة AI غير صالحة.");
-  }
-
+  /* ---- النداء (بدون تبديل تلقائي لمزود آخر) ---- */
   let reply = "";
-  if (provider === "openai") {
-    reply = safeText(data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content);
-  } else {
-    const parts = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
-    reply = safeText(Array.isArray(parts) ? parts.map((p) => p.text || "").join("") : "");
+  try {
+    const out = await callProvider(provider, { ...pconf, messages }, AI_TIMEOUT_MS);
+    reply = out.reply;
+  } catch (e) {
+    await release();
+    const m = e instanceof ProviderError && STUDENT_PROVIDER_MESSAGES[e.kind];
+    if (m) bad(m[0], m[1]);
+    bad("SERVER_ERROR", "خدمة الذكاء الاصطناعي غير متاحة حاليًا. تواصل مع الإدارة.");
   }
 
   if (!reply) {
