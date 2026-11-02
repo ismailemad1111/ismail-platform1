@@ -42,24 +42,39 @@
         <div>
           <h1 class="bk-title">بنك مستر إسماعيل</h1>
           <p class="bk-subtitle">
-            هنا تتحول جهودك إلى جوائز. اجمع فلوسك الافتراضية من التفوق والالتزام،
-            ثم اختر الجائزة التي تستحقها.
+            حوّل تفوقك إلى جوائز حقيقية، واختر ما تستحقه.
           </p>
         </div>
-        <div class="bk-header-icon" aria-hidden="true"><span class="icon icon-trophy"></span></div>
+        <a class="bk-back" href="index.html" aria-label="الرجوع إلى المنصة">
+          <span class="icon icon-chevron-left" aria-hidden="true"></span>
+          <span>المنصة</span>
+        </a>
       </div>
     </header>
 
     <main class="bk-content">
 
-      <!-- رصيد الطالب -->
+      <!-- بطاقة المحفظة -->
       <section class="bk-balance is-loading" id="bkBalance" aria-live="polite">
-        <p class="bk-balance-label">رصيدك الحالي</p>
+        <div class="bk-balance-top">
+          <p class="bk-balance-label">رصيدك الحالي</p>
+          <button type="button" class="bk-hero-refresh" id="bkHeroRefresh" aria-label="تحديث الرصيد">
+            <span class="icon icon-refresh" aria-hidden="true"></span>
+            <span>تحديث</span>
+          </button>
+        </div>
         <div class="bk-balance-row">
           <span class="bk-balance-value" id="bkBalanceValue">—</span>
           <span class="bk-balance-unit">فلوس افتراضية</span>
         </div>
-        <p class="bk-balance-note">يضيف الأستاذ إسماعيل الفلوس إلى رصيدك، ويُخصم منه ثمن الجائزة عند تأكيد الطلب.</p>
+        <div class="bk-hero-stats">
+          <div class="bk-hero-stat"><strong id="bkStatOrders">—</strong><span>عدد الطلبات</span></div>
+          <div class="bk-hero-stat"><strong id="bkStatSpent">—</strong><span>إجمالي المشتريات</span></div>
+          <button type="button" class="bk-hero-link" id="bkHeroLedger">
+            <span>سجل الرصيد</span>
+            <span class="icon icon-chevron-left" aria-hidden="true"></span>
+          </button>
+        </div>
       </section>
 
       <!-- رابط الأحداث والألعاب (الشريط السفلي ممتلئ، فالوصول من هنا ومن الرئيسية) -->
@@ -106,9 +121,11 @@
             <div class="bk-filter-row">
               <select id="bkSort" class="bk-select" aria-label="ترتيب الجوائز">
                 <option value="default">الترتيب الافتراضي</option>
+                <option value="newest">الأحدث</option>
                 <option value="price-asc">السعر: الأقل أولًا</option>
                 <option value="price-desc">السعر: الأعلى أولًا</option>
               </select>
+              <button type="button" class="bk-chip" id="bkAvailOnly" aria-pressed="false">المتاح فقط</button>
               <button type="button" class="bk-chip" id="bkAffordable" aria-pressed="false">أقدر عليها الآن</button>
             </div>
           </div>
@@ -146,6 +163,7 @@
       <section id="bkPanelOrders" aria-label="طلباتي" hidden>
         <div class="bk-state" id="bkOrdersLoading"><div data-lottie="loader" data-lottie-loop aria-hidden="true"></div><p class="bk-state-text">جارٍ التحميل…</p></div>
         <div class="bk-list" id="bkOrdersList" hidden></div>
+        <button type="button" class="bk-btn bk-btn--ghost bk-more" id="bkOrdersMore" hidden>عرض المزيد</button>
         <div class="bk-state" id="bkOrdersEmpty" hidden>
           <div class="bk-state-icon" aria-hidden="true"><span class="icon icon-clipboard"></span></div>
           <h2 class="bk-state-title">لا توجد طلبات بعد</h2>
@@ -160,8 +178,16 @@
 
       <!-- ============ سجل الرصيد ============ -->
       <section id="bkPanelLedger" aria-label="سجل الرصيد" hidden>
+        <div class="bk-filter-row bk-ledger-filters" id="bkLedgerFilters" role="group" aria-label="تصفية السجل">
+          <button type="button" class="bk-chip is-on" data-lf="all" aria-pressed="true">الكل</button>
+          <button type="button" class="bk-chip" data-lf="credit" aria-pressed="false">إضافات</button>
+          <button type="button" class="bk-chip" data-lf="debit" aria-pressed="false">خصومات</button>
+          <button type="button" class="bk-chip" data-lf="purchase" aria-pressed="false">مشتريات</button>
+          <button type="button" class="bk-chip" data-lf="refund" aria-pressed="false">استرجاع</button>
+        </div>
         <div class="bk-state" id="bkLedgerLoading"><p class="bk-state-text">جارٍ التحميل…</p></div>
         <div class="bk-list" id="bkLedgerList" hidden></div>
+        <button type="button" class="bk-btn bk-btn--ghost bk-more" id="bkLedgerMore" hidden>عرض المزيد</button>
         <div class="bk-state" id="bkLedgerEmpty" hidden>
           <div class="bk-state-icon" aria-hidden="true"><span class="icon icon-chart-line"></span></div>
           <h2 class="bk-state-title">لا توجد معاملات بعد</h2>
@@ -199,6 +225,25 @@
         <div class="bk-modal-actions">
           <button type="button" class="bk-btn bk-btn--ghost" id="bkConfirmBack">العودة</button>
           <button type="button" class="bk-btn" id="bkConfirmOk">تأكيد الطلب</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         تفاصيل الجائزة
+         ============================================================ -->
+    <div class="bk-overlay" id="bkDetailOverlay" aria-hidden="true">
+      <div class="bk-modal bk-modal--detail" role="dialog" aria-modal="true" aria-labelledby="bkDetailName">
+        <button type="button" class="bk-modal-close" id="bkDetailClose" aria-label="إغلاق">
+          <span class="icon icon-close" aria-hidden="true"></span>
+        </button>
+        <div class="bk-detail-media" id="bkDetailMedia"></div>
+        <h2 class="bk-modal-title" id="bkDetailName"></h2>
+        <p class="bk-detail-desc" id="bkDetailDesc"></p>
+        <div class="bk-summary" id="bkDetailSummary"></div>
+        <div class="bk-modal-actions">
+          <button type="button" class="bk-btn bk-btn--ghost" id="bkDetailBack">إغلاق</button>
+          <button type="button" class="bk-btn" id="bkDetailOrder">طلب الجائزة</button>
         </div>
       </div>
     </div>
