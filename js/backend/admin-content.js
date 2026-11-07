@@ -4,7 +4,7 @@
    ============================================================ */
 
 import {
-  fs, db, col, route, ok, bad, safeText, clamp, isValidStage, isYouTubeUrl, isLessonUrl, LESSON_KINDS,
+  fs, db, col, route, ok, bad, safeText, clamp, isValidStage, isYouTubeUrl, isLessonUrl, NEW_LESSON_KINDS, storedLessonKind, GROUP_COLORS,
   tsToMs, toPlain,
   requireAdmin, getDocData, queryDocs, listAll, ref, countDocs, sumField, getDocsByIds
 } from "./core.js";
@@ -81,43 +81,84 @@ function validateExamPayload(body, opts = {}) {
   };
 }
 
-/* ---------------- الدروس ---------------- */
+/* ---------------- الدروس (فيديو فقط للجديد) ---------------- */
+
+const toOrder = (v, dflt = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? clamp(Math.round(n), 0, 100000) : dflt;
+};
+
+/** يتحقق من علاقة (المجموعة/الوحدة/المرحلة) ويعيد { group, unit } */
+async function resolveLessonPlacement({ stage, lessonGroupId, unitId }) {
+  const group = await getDocData("lessonGroups", lessonGroupId);
+  if (!group) bad("NOT_FOUND", "المجموعة التعليمية غير موجودة.");
+  if (safeText(group.stage) !== stage) bad("BAD_REQUEST", "المجموعة لا تتبع المرحلة المحددة.");
+  let unit = null;
+  if (unitId) {
+    unit = await getDocData("lessonUnits", unitId);
+    if (!unit) bad("NOT_FOUND", "الوحدة غير موجودة.");
+    if (safeText(unit.lessonGroupId) !== lessonGroupId) bad("BAD_REQUEST", "الوحدة لا تتبع المجموعة نفسها.");
+  }
+  return { group, unit };
+}
+
+const lessonOut = (d) => ({
+  id: d.id,
+  title: safeText(d.title),
+  description: safeText(d.description),
+  kind: storedLessonKind(d),
+  url: safeText(d.url) || safeText(d.youtubeUrl),
+  youtubeUrl: safeText(d.url) || safeText(d.youtubeUrl),
+  stage: safeText(d.stage),
+  lessonGroupId: safeText(d.lessonGroupId) || null,
+  unitId: safeText(d.unitId) || null,
+  order: Number.isFinite(Number(d.order)) ? Number(d.order) : 0,
+  active: d.active !== false,
+  createdAt: d.createdAt || null
+});
 
 route("GET", "/api/admin/lessons", async () => {
   requireAdmin();
   const rows = await listAll("lessons");
-  const lessons = rows.map((d) => ({
-    id: d.id,
-    title: safeText(d.title),
-    kind: safeText(d.kind) || "video",
-    url: safeText(d.url) || safeText(d.youtubeUrl),
-    youtubeUrl: safeText(d.url) || safeText(d.youtubeUrl),
-    stage: safeText(d.stage),
-    createdAt: d.createdAt || null
-  }));
-  lessons.sort((a, b) => tsToMs(b.createdAt) - tsToMs(a.createdAt));
+  const lessons = rows.map(lessonOut);
+  lessons.sort((a, b) => (a.order - b.order) || (tsToMs(b.createdAt) - tsToMs(a.createdAt)));
   return ok(toPlain({ lessons }));
 });
 
 route("POST", "/api/admin/lessons", async ({ body }) => {
   requireAdmin();
   const title = safeText(body.title);
-  const kind = safeText(body.kind);
+  const kind = safeText(body.kind) || "video";
   const url = safeText(body.url) || safeText(body.youtubeUrl);
   const stage = safeText(body.stage);
+  const description = safeText(body.description);
+  const lessonGroupId = safeText(body.lessonGroupId);
+  const unitId = safeText(body.unitId);
+  const active = body.active !== false;
 
   if (!title || title.length > 150) bad("BAD_REQUEST", "العنوان غير صالح.");
-  if (!LESSON_KINDS.includes(kind)) bad("BAD_REQUEST", "نوع الدرس غير صحيح.");
-  if (!isLessonUrl(kind, url)) bad("BAD_REQUEST", kind === "video" ? "رابط YouTube غير صالح." : "الرابط غير صالح (لازم يبدأ بـ https://).");
+  if (description.length > 1000) bad("BAD_REQUEST", "الوصف طويل جدًا.");
+  if (!NEW_LESSON_KINDS.includes(kind)) bad("BAD_REQUEST", "الدروس الجديدة فيديو فقط.");
+  if (!isYouTubeUrl(url)) bad("BAD_REQUEST", "رابط YouTube غير صالح.");
   if (!isValidStage(stage)) bad("BAD_REQUEST", "المرحلة غير صحيحة.");
+  if (!lessonGroupId) bad("BAD_REQUEST", "اختر المجموعة التعليمية.");
+  await resolveLessonPlacement({ stage, lessonGroupId, unitId });
 
-  /* youtubeUrl يبقى للفيديو فقط (توافق مع القديم) */
-  const doc = { title, kind, url, stage, createdAt: fs.serverTimestamp() };
-  if (kind === "video") doc.youtubeUrl = url;
+  let order = body.order === undefined || body.order === "" ? null : toOrder(body.order);
+  if (order === null) {
+    const sibs = (await queryDocs("lessons", fs.where("lessonGroupId", "==", lessonGroupId)))
+      .filter((l) => (safeText(l.unitId) || "") === unitId);
+    order = sibs.reduce((m, l) => Math.max(m, Number(l.order) || 0), 0) + 1;
+  }
+
+  const doc = {
+    title, description, kind: "video", url, youtubeUrl: url, stage,
+    lessonGroupId, unitId: unitId || null, order, active,
+    createdAt: fs.serverTimestamp()
+  };
   const created = await fs.addDoc(col("lessons"), doc);
-
   return ok({
-    lesson: { id: created.id, title, kind, url, youtubeUrl: url, stage, createdAt: new Date().toISOString() }
+    lesson: lessonOut({ ...doc, id: created.id, createdAt: new Date().toISOString() })
   });
 });
 
@@ -125,24 +166,75 @@ route("PATCH", "/api/admin/lessons/:id", async ({ params, body }) => {
   requireAdmin();
   const id = safeText(params.id);
   if (!id) bad("BAD_REQUEST", "المعرّف مطلوب.");
-  if (!(await getDocData("lessons", id))) bad("NOT_FOUND", "الدرس غير موجود.");
-
   const old = await getDocData("lessons", id);
+  if (!old) bad("NOT_FOUND", "الدرس غير موجود.");
+
+  const oldKind = storedLessonKind(old);
+  /* لا تغيير للنوع إلى صوت/ملازم، والنوع القديم يبقى كما هو */
+  if (typeof body.kind === "string" && body.kind !== oldKind && !NEW_LESSON_KINDS.includes(body.kind)) {
+    bad("BAD_REQUEST", "الدروس فيديو فقط.");
+  }
+
   const update = {};
-  if (typeof body.title === "string") update.title = safeText(body.title);
-  if (typeof body.kind === "string" && LESSON_KINDS.includes(body.kind)) update.kind = body.kind;
-  const newKind = update.kind || safeText(old.kind) || "video";
+  if (typeof body.title === "string") {
+    const t = safeText(body.title);
+    if (!t || t.length > 150) bad("BAD_REQUEST", "العنوان غير صالح.");
+    update.title = t;
+  }
+  if (typeof body.description === "string") {
+    const d = safeText(body.description);
+    if (d.length > 1000) bad("BAD_REQUEST", "الوصف طويل جدًا.");
+    update.description = d;
+  }
   const newUrl = safeText(body.url) || safeText(body.youtubeUrl);
   if (newUrl) {
-    if (!isLessonUrl(newKind, newUrl)) bad("BAD_REQUEST", newKind === "video" ? "رابط YouTube غير صالح." : "الرابط غير صالح (لازم يبدأ بـ https://).");
+    if (!isYouTubeUrl(newUrl)) bad("BAD_REQUEST", "رابط YouTube غير صالح.");
     update.url = newUrl;
-    if (newKind === "video") update.youtubeUrl = newUrl;
+    update.youtubeUrl = newUrl;
+    update.kind = "video";
+  } else if (oldKind !== "video" && typeof body.kind === "string" && body.kind === "video") {
+    bad("BAD_REQUEST", "أدخل رابط YouTube لتحويل الدرس القديم إلى فيديو.");
   }
-  if (typeof body.stage === "string" && isValidStage(body.stage)) update.stage = body.stage;
+  if (typeof body.active === "boolean") update.active = body.active;
+  if (body.order !== undefined && body.order !== "") update.order = toOrder(body.order);
+
+  /* العلاقات: تُفحص دائمًا على القيم النهائية */
+  const stage = typeof body.stage === "string" ? body.stage : safeText(old.stage);
+  if (!isValidStage(stage)) bad("BAD_REQUEST", "المرحلة غير صحيحة.");
+  const groupChanged = typeof body.lessonGroupId === "string" && safeText(body.lessonGroupId) !== (safeText(old.lessonGroupId) || "");
+  let groupId = typeof body.lessonGroupId === "string" ? safeText(body.lessonGroupId) : (safeText(old.lessonGroupId) || "");
+  let unitId = body.unitId !== undefined ? safeText(body.unitId) : (groupChanged ? "" : (safeText(old.unitId) || ""));
+  if (groupChanged && body.unitId === undefined) unitId = ""; /* لا نحتفظ بوحدة من مجموعة مختلفة */
+  const touchesPlacement = groupChanged || body.unitId !== undefined || stage !== safeText(old.stage) || (typeof body.lessonGroupId === "string");
+  if (touchesPlacement) {
+    if (!groupId) bad("BAD_REQUEST", "اختر المجموعة التعليمية.");
+    await resolveLessonPlacement({ stage, lessonGroupId: groupId, unitId });
+    update.stage = stage;
+    update.lessonGroupId = groupId;
+    update.unitId = unitId || null;
+    if (groupChanged && body.order === undefined) {
+      const sibs = (await queryDocs("lessons", fs.where("lessonGroupId", "==", groupId)))
+        .filter((l) => (safeText(l.unitId) || "") === unitId);
+      update.order = sibs.reduce((m, l) => Math.max(m, Number(l.order) || 0), 0) + 1;
+    }
+  }
   update.updatedAt = fs.serverTimestamp();
 
   await fs.updateDoc(ref("lessons", id), update);
   return ok({ updated: true });
+});
+
+/* ترتيب الدروس: ids بالترتيب الجديد (داخل نفس الوحدة/المجموعة) */
+route("POST", "/api/admin/lessons/reorder", async ({ body }) => {
+  requireAdmin();
+  const ids = Array.isArray(body.ids) ? body.ids.map(safeText).filter(Boolean) : [];
+  if (!ids.length || ids.length > 400 || new Set(ids).size !== ids.length) bad("BAD_REQUEST", "قائمة الترتيب غير صالحة.");
+  const found = await getDocsByIds("lessons", ids);
+  if (ids.some((i) => !found[i])) bad("NOT_FOUND", "بعض الدروس غير موجودة.");
+  const batch = fs.writeBatch(db);
+  ids.forEach((i, n) => batch.update(ref("lessons", i), { order: n + 1, updatedAt: fs.serverTimestamp() }));
+  await batch.commit();
+  return ok({ reordered: ids.length });
 });
 
 route("DELETE", "/api/admin/lessons/:id", async ({ params }) => {
@@ -653,19 +745,49 @@ route("POST", "/api/admin/ai-settings/test", async ({ body }) => {
   }
 });
 
-/* ---------------- مجموعات الدروس ---------------- */
+/* ---------------- مجموعات الدروس + الوحدات ---------------- */
+
+const groupOut = (d) => ({
+  id: d.id,
+  name: safeText(d.name),
+  description: safeText(d.description),
+  stage: safeText(d.stage),
+  coverUrl: safeText(d.coverUrl),
+  color: GROUP_COLORS.includes(safeText(d.color)) ? safeText(d.color) : "indigo",
+  order: Number.isFinite(Number(d.order)) ? Number(d.order) : 0,
+  active: d.active !== false,
+  createdAt: d.createdAt || null
+});
+
+const unitOut = (d) => ({
+  id: d.id,
+  lessonGroupId: safeText(d.lessonGroupId),
+  stage: safeText(d.stage),
+  name: safeText(d.name),
+  description: safeText(d.description),
+  order: Number.isFinite(Number(d.order)) ? Number(d.order) : 0,
+  active: d.active !== false,
+  createdAt: d.createdAt || null
+});
+
+/** غلاف اختياري: رابط https فقط (أو فارغ) */
+function cleanCover(v) {
+  const s = safeText(v);
+  if (!s) return "";
+  if (s.length > 1000 || !/^https:\/\//i.test(s)) bad("BAD_REQUEST", "رابط الغلاف يجب أن يبدأ بـ https://");
+  return s;
+}
 
 route("GET", "/api/admin/lesson-groups", async () => {
   requireAdmin();
-  const rows = await listAll("lessonGroups");
-  const groups = rows.map((d) => ({
-    id: d.id,
-    name: safeText(d.name),
-    stage: safeText(d.stage),
-    active: d.active !== false,
-    createdAt: d.createdAt || null
-  }));
-  groups.sort((a, b) => tsToMs(b.createdAt) - tsToMs(a.createdAt));
+  const [rows, units, lessons] = await Promise.all([listAll("lessonGroups"), listAll("lessonUnits"), listAll("lessons")]);
+  const groups = rows.map((d) => {
+    const g = groupOut(d);
+    g.unitCount = units.filter((u) => safeText(u.lessonGroupId) === d.id).length;
+    g.lessonCount = lessons.filter((l) => safeText(l.lessonGroupId) === d.id).length;
+    return g;
+  });
+  groups.sort((a, b) => (a.order - b.order) || (tsToMs(b.createdAt) - tsToMs(a.createdAt)));
   return ok(toPlain({ groups }));
 });
 
@@ -673,40 +795,189 @@ route("POST", "/api/admin/lesson-groups", async ({ body }) => {
   requireAdmin();
   const name = safeText(body.name);
   const stage = safeText(body.stage);
+  const description = safeText(body.description);
   const active = body.active !== false;
+  const color = GROUP_COLORS.includes(safeText(body.color)) ? safeText(body.color) : "indigo";
 
   if (!name || name.length > 80) bad("BAD_REQUEST", "اسم المجموعة غير صالح.");
+  if (description.length > 600) bad("BAD_REQUEST", "الوصف طويل جدًا.");
   if (!isValidStage(stage)) bad("BAD_REQUEST", "المرحلة غير صحيحة.");
+  const coverUrl = cleanCover(body.coverUrl);
 
-  const created = await fs.addDoc(col("lessonGroups"), {
-    name, stage, active, createdAt: fs.serverTimestamp()
-  });
-  return ok({
-    group: { id: created.id, name, stage, active, createdAt: new Date().toISOString() }
-  });
+  let order;
+  if (body.order !== undefined && body.order !== "") order = toOrder(body.order);
+  else {
+    const same = await queryDocs("lessonGroups", fs.where("stage", "==", stage));
+    order = same.reduce((m, g) => Math.max(m, Number(g.order) || 0), 0) + 1;
+  }
+
+  const doc = { name, description, stage, coverUrl, color, order, active, createdAt: fs.serverTimestamp() };
+  const created = await fs.addDoc(col("lessonGroups"), doc);
+  return ok({ group: groupOut({ ...doc, id: created.id, createdAt: new Date().toISOString() }) });
+});
+
+route("POST", "/api/admin/lesson-groups/reorder", async ({ body }) => {
+  requireAdmin();
+  const ids = Array.isArray(body.ids) ? body.ids.map(safeText).filter(Boolean) : [];
+  if (!ids.length || ids.length > 200 || new Set(ids).size !== ids.length) bad("BAD_REQUEST", "قائمة الترتيب غير صالحة.");
+  const found = await getDocsByIds("lessonGroups", ids);
+  if (ids.some((i) => !found[i])) bad("NOT_FOUND", "بعض المجموعات غير موجودة.");
+  const batch = fs.writeBatch(db);
+  ids.forEach((i, n) => batch.update(ref("lessonGroups", i), { order: n + 1, updatedAt: fs.serverTimestamp() }));
+  await batch.commit();
+  return ok({ reordered: ids.length });
 });
 
 route("PATCH", "/api/admin/lesson-groups/:id", async ({ params, body }) => {
   requireAdmin();
   const id = safeText(params.id);
   if (!id) bad("BAD_REQUEST", "المعرّف مطلوب.");
-  if (!(await getDocData("lessonGroups", id))) bad("NOT_FOUND", "المجموعة غير موجودة.");
+  const old = await getDocData("lessonGroups", id);
+  if (!old) bad("NOT_FOUND", "المجموعة غير موجودة.");
 
   const update = {};
-  if (typeof body.name === "string") update.name = safeText(body.name);
-  if (typeof body.stage === "string" && isValidStage(body.stage)) update.stage = body.stage;
+  if (typeof body.name === "string") {
+    const n = safeText(body.name);
+    if (!n || n.length > 80) bad("BAD_REQUEST", "اسم المجموعة غير صالح.");
+    update.name = n;
+  }
+  if (typeof body.description === "string") {
+    const d = safeText(body.description);
+    if (d.length > 600) bad("BAD_REQUEST", "الوصف طويل جدًا.");
+    update.description = d;
+  }
+  if (typeof body.coverUrl === "string") update.coverUrl = cleanCover(body.coverUrl);
+  if (typeof body.color === "string" && GROUP_COLORS.includes(body.color)) update.color = body.color;
+  if (body.order !== undefined && body.order !== "") update.order = toOrder(body.order);
   if (typeof body.active === "boolean") update.active = body.active;
+
+  /* تغيير المرحلة يجب ألا يترك دروسًا/وحدات بمرحلة مختلفة عن مجموعتها */
+  if (typeof body.stage === "string" && isValidStage(body.stage) && body.stage !== safeText(old.stage)) {
+    update.stage = body.stage;
+    const [lessons, units] = await Promise.all([
+      queryDocs("lessons", fs.where("lessonGroupId", "==", id)),
+      queryDocs("lessonUnits", fs.where("lessonGroupId", "==", id))
+    ]);
+    const writes = [...lessons.map((l) => ref("lessons", l.id)), ...units.map((u) => ref("lessonUnits", u.id))];
+    for (let i = 0; i < writes.length; i += 400) {
+      const batch = fs.writeBatch(db);
+      writes.slice(i, i + 400).forEach((r) => batch.update(r, { stage: body.stage }));
+      await batch.commit();
+    }
+  }
   update.updatedAt = fs.serverTimestamp();
 
   await fs.updateDoc(ref("lessonGroups", id), update);
   return ok({ updated: true });
 });
 
+/* حذف المجموعة: تُحذف وحداتها (تنظيم فقط)، أما الدروس فلا تُحذف أبدًا:
+   تُفصل عن المجموعة وتصير "غير مصنفة" (تظهر للطالب ضمن "دروس عامة" إن كانت منشورة).
+   طلبات الاشتراك تحتفظ باسم المجموعة (lessonGroupName) فلا تتأثر. */
 route("DELETE", "/api/admin/lesson-groups/:id", async ({ params }) => {
   requireAdmin();
   const id = safeText(params.id);
   if (!id) bad("BAD_REQUEST", "المعرّف مطلوب.");
   if (!(await getDocData("lessonGroups", id))) bad("NOT_FOUND", "المجموعة غير موجودة.");
+
+  const [lessons, units] = await Promise.all([
+    queryDocs("lessons", fs.where("lessonGroupId", "==", id)),
+    queryDocs("lessonUnits", fs.where("lessonGroupId", "==", id))
+  ]);
+  for (let i = 0; i < lessons.length; i += 400) {
+    const batch = fs.writeBatch(db);
+    lessons.slice(i, i + 400).forEach((l) => batch.update(ref("lessons", l.id), { lessonGroupId: null, unitId: null, updatedAt: fs.serverTimestamp() }));
+    await batch.commit();
+  }
+  await deleteMany("lessonUnits", units.map((u) => u.id));
   await fs.deleteDoc(ref("lessonGroups", id));
-  return ok({ deleted: true });
+  return ok({ deleted: true, detachedLessons: lessons.length, deletedUnits: units.length });
+});
+
+/* ---------------- الوحدات ---------------- */
+
+route("GET", "/api/admin/lesson-units", async ({ query }) => {
+  requireAdmin();
+  const gid = safeText(query.lessonGroupId);
+  const rows = gid ? await queryDocs("lessonUnits", fs.where("lessonGroupId", "==", gid)) : await listAll("lessonUnits");
+  const units = rows.map(unitOut);
+  units.sort((a, b) => (a.order - b.order) || (tsToMs(a.createdAt) - tsToMs(b.createdAt)));
+  return ok(toPlain({ units }));
+});
+
+route("POST", "/api/admin/lesson-units", async ({ body }) => {
+  requireAdmin();
+  const lessonGroupId = safeText(body.lessonGroupId);
+  const name = safeText(body.name);
+  const description = safeText(body.description);
+  if (!name || name.length > 80) bad("BAD_REQUEST", "اسم الوحدة غير صالح.");
+  if (description.length > 600) bad("BAD_REQUEST", "الوصف طويل جدًا.");
+  const group = lessonGroupId ? await getDocData("lessonGroups", lessonGroupId) : null;
+  if (!group) bad("NOT_FOUND", "المجموعة غير موجودة.");
+
+  let order;
+  if (body.order !== undefined && body.order !== "") order = toOrder(body.order);
+  else {
+    const sibs = await queryDocs("lessonUnits", fs.where("lessonGroupId", "==", lessonGroupId));
+    order = sibs.reduce((m, u) => Math.max(m, Number(u.order) || 0), 0) + 1;
+  }
+  const doc = {
+    lessonGroupId, stage: safeText(group.stage), name, description, order,
+    active: body.active !== false, createdAt: fs.serverTimestamp()
+  };
+  const created = await fs.addDoc(col("lessonUnits"), doc);
+  return ok({ unit: unitOut({ ...doc, id: created.id, createdAt: new Date().toISOString() }) });
+});
+
+route("POST", "/api/admin/lesson-units/reorder", async ({ body }) => {
+  requireAdmin();
+  const lessonGroupId = safeText(body.lessonGroupId);
+  const ids = Array.isArray(body.ids) ? body.ids.map(safeText).filter(Boolean) : [];
+  if (!ids.length || ids.length > 200 || new Set(ids).size !== ids.length) bad("BAD_REQUEST", "قائمة الترتيب غير صالحة.");
+  const found = await getDocsByIds("lessonUnits", ids);
+  if (ids.some((i) => !found[i])) bad("NOT_FOUND", "بعض الوحدات غير موجودة.");
+  if (lessonGroupId && ids.some((i) => safeText(found[i].lessonGroupId) !== lessonGroupId)) bad("BAD_REQUEST", "الوحدات لا تتبع المجموعة نفسها.");
+  const batch = fs.writeBatch(db);
+  ids.forEach((i, n) => batch.update(ref("lessonUnits", i), { order: n + 1, updatedAt: fs.serverTimestamp() }));
+  await batch.commit();
+  return ok({ reordered: ids.length });
+});
+
+route("PATCH", "/api/admin/lesson-units/:id", async ({ params, body }) => {
+  requireAdmin();
+  const id = safeText(params.id);
+  if (!id) bad("BAD_REQUEST", "المعرّف مطلوب.");
+  if (!(await getDocData("lessonUnits", id))) bad("NOT_FOUND", "الوحدة غير موجودة.");
+  const update = {};
+  if (typeof body.name === "string") {
+    const n = safeText(body.name);
+    if (!n || n.length > 80) bad("BAD_REQUEST", "اسم الوحدة غير صالح.");
+    update.name = n;
+  }
+  if (typeof body.description === "string") {
+    const d = safeText(body.description);
+    if (d.length > 600) bad("BAD_REQUEST", "الوصف طويل جدًا.");
+    update.description = d;
+  }
+  if (body.order !== undefined && body.order !== "") update.order = toOrder(body.order);
+  if (typeof body.active === "boolean") update.active = body.active;
+  update.updatedAt = fs.serverTimestamp();
+  await fs.updateDoc(ref("lessonUnits", id), update);
+  return ok({ updated: true });
+});
+
+/* حذف الوحدة: دروسها لا تُحذف، تنتقل للمجموعة مباشرة (unitId = null) */
+route("DELETE", "/api/admin/lesson-units/:id", async ({ params }) => {
+  requireAdmin();
+  const id = safeText(params.id);
+  if (!id) bad("BAD_REQUEST", "المعرّف مطلوب.");
+  if (!(await getDocData("lessonUnits", id))) bad("NOT_FOUND", "الوحدة غير موجودة.");
+  const lessons = await queryDocs("lessons", fs.where("unitId", "==", id));
+  for (let i = 0; i < lessons.length; i += 400) {
+    const batch = fs.writeBatch(db);
+    lessons.slice(i, i + 400).forEach((l) => batch.update(ref("lessons", l.id), { unitId: null, updatedAt: fs.serverTimestamp() }));
+    await batch.commit();
+  }
+  await fs.deleteDoc(ref("lessonUnits", id));
+  return ok({ deleted: true, movedLessons: lessons.length });
 });
