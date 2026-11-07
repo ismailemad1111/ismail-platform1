@@ -713,6 +713,7 @@
       .adm-skeleton { animation: none; }
     }
   </style>
+  <link rel="stylesheet" href="../css/lessons-collections.css" />
   <link rel="stylesheet" href="../css/screens.css" />
   <link rel="stylesheet" href="../css/editorial-redesign.css" />
   <link rel="stylesheet" href="../css/mobile-pro.css" />
@@ -722,74 +723,43 @@
 
   <div class="adm-page">
 
-    <!-- ============================================================
-         HEADER
-         ============================================================ -->
     <header class="adm-header">
       <div class="adm-header-inner">
-
-        <a href="index.html" class="adm-back-btn" aria-label="رجوع">
+        <a href="index.html" class="adm-back-btn" id="lsBackLink" aria-label="رجوع">
           <span class="icon icon-arrow-forward" aria-hidden="true"></span>
         </a>
-
         <div class="adm-header-brand">
-          <h1 class="adm-header-title">الدروس</h1>
-          <p class="adm-header-sub" id="lsHeaderSub">إدارة دروس الفيديو والصوت</p>
+          <h1 class="adm-header-title" id="lsHeaderTitle">الدروس</h1>
+          <p class="adm-header-sub" id="lsHeaderSub">إدارة المجموعات التعليمية والفيديوهات</p>
         </div>
-
-        <button
-          type="button"
-          class="adm-header-btn adm-header-btn--primary"
-          id="lsCreateBtn"
-          title="إضافة درس"
-          aria-label="إضافة درس"
-        >
+        <button type="button" class="adm-header-btn adm-header-btn--primary" id="lsCreateBtn" title="إضافة درس" aria-label="إضافة درس">
           <span class="icon icon-plus" aria-hidden="true"></span>
         </button>
-
       </div>
     </header>
 
-    <!-- ============================================================
-         CONTENT
-         ============================================================ -->
     <main class="adm-content">
 
-      <!-- Stats -->
-      <section class="ls-stats" id="lsStats">
-        <div class="ls-stat is-active" data-kind="all">
-          <div class="ls-stat-value" id="statLsAll">0</div>
-          <div class="ls-stat-label">الكل</div>
-        </div>
-        <div class="ls-stat" data-kind="audio">
-          <div class="ls-stat-value is-green" id="statLsAudio">0</div>
-          <div class="ls-stat-label">صوت</div>
-        </div>
-        <div class="ls-stat" data-kind="notes">
-          <div class="ls-stat-value is-blue" id="statLsVideo">0</div>
-          <div class="ls-stat-label">ملازم</div>
-        </div>
-      </section>
+      <!-- الرئيسية: إحصاءات + بحث + فلاتر + بطاقات المجموعات -->
+      <div id="lsHome">
+        <section class="lca-stats">
+          <div class="lca-stat"><b id="statGroups">0</b><span>مجموعات</span></div>
+          <div class="lca-stat"><b id="statUnits">0</b><span>وحدات</span></div>
+          <div class="lca-stat"><b id="statVideos">0</b><span>فيديوهات</span></div>
+        </section>
 
-      <!-- Toolbar -->
-      <section class="ls-toolbar">
-
-        <div class="ls-search">
-          <span class="ls-search-icon" aria-hidden="true"><span class="icon icon-search" aria-hidden="true"></span></span>
-          <input
-            type="text"
-            id="lsSearchInput"
-            placeholder="ابحث بعنوان الدرس..."
-            inputmode="text"
-            spellcheck="false"
-            autocomplete="off"
-          />
+        <div class="lca-actions">
+          <button type="button" class="lca-btn is-primary" id="lsNewGroupBtn">+ إنشاء مجموعة</button>
+          <button type="button" class="lca-btn" id="lsNewLessonBtn">+ إضافة درس</button>
         </div>
 
-        <div class="ls-filters" id="lsStageFilters">
-          <button type="button" class="ls-filter is-active" data-stage="all">
-            كل المراحل
-          </button>
+        <section class="ls-toolbar">
+          <div class="ls-search">
+            <span class="ls-search-icon" aria-hidden="true"><span class="icon icon-search" aria-hidden="true"></span></span>
+            <input type="text" id="lsSearchInput" placeholder="ابحث باسم المجموعة أو الوحدة أو الدرس..." inputmode="text" spellcheck="false" autocomplete="off" />
+          </div>
+          <div class="ls-filters" id="lsStageFilters">
+            <button type="button" class="ls-filter is-active" data-stage="all">كل المراحل</button>
           <button type="button" class="ls-filter" data-stage="grade_4">رابعة ابتدائي</button>
           <button type="button" class="ls-filter" data-stage="grade_5">خامسة ابتدائي</button>
           <button type="button" class="ls-filter" data-stage="grade_6">سادسة ابتدائي</button>
@@ -799,102 +769,134 @@
           <button type="button" class="ls-filter" data-stage="sec_1">أولى ثانوي</button>
           <button type="button" class="ls-filter" data-stage="sec_2">ثانية ثانوي</button>
           <button type="button" class="ls-filter" data-stage="sec_3">ثالثة ثانوي</button>
-        </div>
+          </div>
+        </section>
+      </div>
 
-      </section>
+      <!-- داخل مجموعة -->
+      <div id="lsGroupView" style="display: none;"></div>
 
-      <!-- States -->
+      <!-- الحالات -->
       <div id="lsSkeleton">
-        <div class="ls-list">
-          <div class="adm-skeleton"></div>
-          <div class="adm-skeleton"></div>
-          <div class="adm-skeleton"></div>
+        <div class="lc-grid">
+          <div class="lc-skel"></div><div class="lc-skel"></div>
         </div>
       </div>
 
       <div class="adm-state" id="lsEmpty" style="display: none;">
-        <div class="adm-state-icon" aria-hidden="true"><span class="icon icon-video" aria-hidden="true"></span></div>
-        <h3 class="adm-state-title">لا توجد دروس</h3>
-        <p class="adm-state-text">ابدأ بإضافة أول درس للطلاب.</p>
+        <div class="adm-state-icon" aria-hidden="true"><span class="icon icon-books" aria-hidden="true"></span></div>
+        <h2 class="adm-state-title" id="lsEmptyTitle">لا توجد مجموعات بعد</h2>
+        <p class="adm-state-text" id="lsEmptyText">أنشئ أول مجموعة تعليمية (مثل: منهج الشهر الأول) ثم أضف إليها الفيديوهات.</p>
       </div>
 
       <div class="adm-state" id="lsError" style="display: none;">
         <div class="adm-state-icon" aria-hidden="true"><span class="icon icon-warning" aria-hidden="true"></span></div>
-        <h3 class="adm-state-title">تعذر تحميل الدروس</h3>
-        <p class="adm-state-text">تأكد من الاتصال بالإنترنت وحاول مرة أخرى.</p>
-        <button
-          type="button"
-          id="lsRetryBtn"
-          style="
-            margin-top: 14px;
-            min-height: 42px;
-            padding: 0 20px;
-            border-radius: 12px;
-            background: var(--color-blue);
-            color: #FFFFFF;
-            font-family: var(--font-arabic);
-            font-size: 13px;
-            font-weight: 800;
-            border: none;
-            cursor: pointer;
-            box-shadow: 0 3px 0 var(--color-blue-dark);
-          "
-        >
-          حاول مرة أخرى
-        </button>
+        <h2 class="adm-state-title">تعذر تحميل المحتوى</h2>
+        <p class="adm-state-text">تأكد من اتصالك بالإنترنت وحاول مرة أخرى.</p>
+        <button type="button" class="lca-btn is-primary" id="lsRetryBtn" style="margin-top:14px;">حاول مرة أخرى</button>
       </div>
 
-      <!-- List -->
-      <div class="ls-list" id="lsList" style="display: none;"></div>
-
+      <!-- الشبكة -->
+      <div class="lc-grid lc-grid-wide" id="lsGroupGrid" style="display: none;"></div>
     </main>
 
-    <!-- ============================================================
-         CREATE / EDIT MODAL
-         ============================================================ -->
-    <div
-      class="adm-modal-overlay"
-      id="lsModal"
-      role="dialog"
-      aria-modal="true"
-      aria-hidden="true"
-      aria-labelledby="lsModalTitle"
-    >
+    <!-- ===== مودال المجموعة ===== -->
+    <div class="adm-modal-overlay" id="grpModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="grpModalTitle">
       <div class="adm-modal">
-
-        <h2 class="adm-modal-title" id="lsModalTitle">درس جديد</h2>
-        <p class="adm-modal-sub" id="lsModalSub">سيظهر الدرس للطلاب حسب المرحلة.</p>
-
-        <!-- العنوان -->
+        <h2 class="adm-modal-title" id="grpModalTitle">مجموعة جديدة</h2>
+        <p class="adm-modal-sub">عنوان تعليمي مثل: منهج الشهر الأول.</p>
         <div class="adm-modal-group">
-          <label class="adm-modal-label" for="lsTitleInput">
-            عنوان الدرس <span class="required">*</span>
-          </label>
-          <input
-            type="text"
-            class="adm-modal-input"
-            id="lsTitleInput"
-            placeholder="مثال: الدرس الأول — مقدمة"
-            maxlength="150"
-          />
+          <label class="adm-modal-label" for="grpName">اسم المجموعة <span class="required">*</span></label>
+          <input type="text" class="adm-modal-input" id="grpName" maxlength="80" placeholder="مثال: منهج الشهر الأول" />
         </div>
-
-        <!-- النوع -->
         <div class="adm-modal-group">
-          <label class="adm-modal-label" for="lsKindSelect">
-            نوع الدرس <span class="required">*</span>
-          </label>
-          <select class="adm-modal-select" id="lsKindSelect">
-            <option value="audio">تسجيل صوتي</option>
-            <option value="notes">ملزمة / ورق شرح (PDF أو صور)</option>
+          <label class="adm-modal-label" for="grpDesc">الوصف</label>
+          <textarea class="adm-modal-input lca-textarea" id="grpDesc" maxlength="600" placeholder="وصف مختصر يظهر للطالب"></textarea>
+        </div>
+        <div class="adm-modal-group">
+          <label class="adm-modal-label" for="grpStage">المرحلة الدراسية <span class="required">*</span></label>
+          <select class="adm-modal-select" id="grpStage">
+            <option value="">اختر المرحلة</option>
+            <option value="grade_4">الصف الرابع الابتدائي</option>
+            <option value="grade_5">الصف الخامس الابتدائي</option>
+            <option value="grade_6">الصف السادس الابتدائي</option>
+            <option value="prep_1">الصف الأول الإعدادي</option>
+            <option value="prep_2">الصف الثاني الإعدادي</option>
+            <option value="prep_3">الصف الثالث الإعدادي</option>
+            <option value="sec_1">الصف الأول الثانوي</option>
+            <option value="sec_2">الصف الثاني الثانوي</option>
+            <option value="sec_3">الصف الثالث الثانوي</option>
           </select>
         </div>
-
-        <!-- المرحلة -->
         <div class="adm-modal-group">
-          <label class="adm-modal-label" for="lsStageSelect">
-            المرحلة الدراسية <span class="required">*</span>
-          </label>
+          <label class="adm-modal-label" for="grpCover">صورة الغلاف (رابط https — اختياري)</label>
+          <input type="text" class="adm-modal-input" id="grpCover" dir="ltr" maxlength="1000" placeholder="https://..." />
+          <p class="adm-modal-note">بدون صورة سيظهر غلاف بتدرج لوني وأشكال هندسية.</p>
+        </div>
+        <div class="adm-modal-group">
+          <span class="adm-modal-label">اللون</span>
+          <div class="lca-swatches" id="grpColors"><button type="button" class="lca-swatch" data-color="indigo" data-pick="indigo" aria-label="indigo"></button><button type="button" class="lca-swatch" data-color="violet" data-pick="violet" aria-label="violet"></button><button type="button" class="lca-swatch" data-color="teal" data-pick="teal" aria-label="teal"></button><button type="button" class="lca-swatch" data-color="amber" data-pick="amber" aria-label="amber"></button><button type="button" class="lca-swatch" data-color="rose" data-pick="rose" aria-label="rose"></button><button type="button" class="lca-swatch" data-color="sky" data-pick="sky" aria-label="sky"></button><button type="button" class="lca-swatch" data-color="emerald" data-pick="emerald" aria-label="emerald"></button><button type="button" class="lca-swatch" data-color="slate" data-pick="slate" aria-label="slate"></button></div>
+        </div>
+        <div class="adm-modal-group lca-row2">
+          <div>
+            <label class="adm-modal-label" for="grpOrder">ترتيب الظهور</label>
+            <input type="number" class="adm-modal-input" id="grpOrder" min="0" step="1" placeholder="تلقائي" />
+          </div>
+          <div>
+            <span class="adm-modal-label">الحالة</span>
+            <label class="lca-switch"><input type="checkbox" id="grpActive" checked /> منشورة</label>
+          </div>
+        </div>
+        <div class="adm-modal-actions">
+          <button type="button" class="adm-modal-btn adm-modal-btn--cancel" data-close="grpModal">إلغاء</button>
+          <button type="button" class="adm-modal-btn adm-modal-btn--primary" id="grpSave">حفظ</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== مودال الوحدة ===== -->
+    <div class="adm-modal-overlay" id="unitModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="unitModalTitle">
+      <div class="adm-modal">
+        <h2 class="adm-modal-title" id="unitModalTitle">وحدة جديدة</h2>
+        <p class="adm-modal-sub" id="unitModalSub">الوحدات اختيارية داخل المجموعة.</p>
+        <div class="adm-modal-group">
+          <label class="adm-modal-label" for="unitName">اسم الوحدة <span class="required">*</span></label>
+          <input type="text" class="adm-modal-input" id="unitName" maxlength="80" placeholder="مثال: الوحدة الأولى" />
+        </div>
+        <div class="adm-modal-group">
+          <label class="adm-modal-label" for="unitDesc">الوصف</label>
+          <textarea class="adm-modal-input lca-textarea" id="unitDesc" maxlength="600"></textarea>
+        </div>
+        <div class="adm-modal-group">
+          <label class="lca-switch"><input type="checkbox" id="unitActive" checked /> منشورة</label>
+        </div>
+        <div class="adm-modal-actions">
+          <button type="button" class="adm-modal-btn adm-modal-btn--cancel" data-close="unitModal">إلغاء</button>
+          <button type="button" class="adm-modal-btn adm-modal-btn--primary" id="unitSave">حفظ</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== مودال الدرس (إضافة/تعديل) ===== -->
+    <div class="adm-modal-overlay" id="lsModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="lsModalTitle">
+      <div class="adm-modal">
+        <h2 class="adm-modal-title" id="lsModalTitle">درس جديد</h2>
+        <p class="adm-modal-sub" id="lsModalSub">فيديو من YouTube داخل مجموعة تعليمية.</p>
+        <div class="adm-modal-group">
+          <label class="adm-modal-label" for="lsTitleInput">عنوان الدرس <span class="required">*</span></label>
+          <input type="text" class="adm-modal-input" id="lsTitleInput" placeholder="مثال: الدرس الأول — مقدمة" maxlength="150" />
+        </div>
+        <div class="adm-modal-group">
+          <label class="adm-modal-label" for="lsDescInput">وصف الدرس</label>
+          <textarea class="adm-modal-input lca-textarea" id="lsDescInput" maxlength="1000"></textarea>
+        </div>
+        <div class="adm-modal-group">
+          <label class="adm-modal-label" for="lsUrlInput">رابط الفيديو (YouTube) <span class="required">*</span></label>
+          <input type="text" class="adm-modal-input" id="lsUrlInput" placeholder="https://youtu.be/..." maxlength="500" dir="ltr" />
+          <div class="adm-modal-preview" id="lsPreview"><span aria-hidden="true">🎬</span></div>
+        </div>
+        <div class="adm-modal-group">
+          <label class="adm-modal-label" for="lsStageSelect">المرحلة الدراسية <span class="required">*</span></label>
           <select class="adm-modal-select" id="lsStageSelect">
             <option value="">اختر المرحلة</option>
             <option value="grade_4">الصف الرابع الابتدائي</option>
@@ -908,48 +910,60 @@
             <option value="sec_3">الصف الثالث الثانوي</option>
           </select>
         </div>
-
-        <!-- رابط YouTube -->
         <div class="adm-modal-group">
-          <label class="adm-modal-label" for="lsUrlInput">
-            <span id="lsUrlLabel">الرابط</span> <span class="required">*</span>
-          </label>
-          <input
-            type="text"
-            class="adm-modal-input"
-            id="lsUrlInput"
-            placeholder="https://..."
-            maxlength="500"
-            dir="ltr"
-          />
-          <p class="adm-modal-note" id="lsUrlHint">
-            الصق رابط الملف (لازم يبدأ بـ https://).
-          </p>
+          <label class="adm-modal-label" for="lsGroupSelect">المجموعة التعليمية <span class="required">*</span></label>
+          <select class="adm-modal-select" id="lsGroupSelect"></select>
         </div>
-
-        <!-- Preview -->
-        <div class="adm-modal-preview" id="lsPreview">
-          <span aria-hidden="true"><span class="icon icon-clapperboard" aria-hidden="true"></span></span>
+        <div class="adm-modal-group">
+          <label class="adm-modal-label" for="lsUnitSelect">الوحدة (اختيارية)</label>
+          <select class="adm-modal-select" id="lsUnitSelect"></select>
         </div>
-
-        <!-- Actions -->
+        <div class="adm-modal-group lca-row2">
+          <div>
+            <label class="adm-modal-label" for="lsOrderInput">ترتيب الدرس</label>
+            <input type="number" class="adm-modal-input" id="lsOrderInput" min="0" step="1" placeholder="تلقائي" />
+          </div>
+          <div>
+            <span class="adm-modal-label">الحالة</span>
+            <label class="lca-switch"><input type="checkbox" id="lsActiveInput" checked /> منشور</label>
+          </div>
+        </div>
         <div class="adm-modal-actions">
-          <button
-            type="button"
-            class="adm-modal-btn adm-modal-btn--cancel"
-            id="lsCancelBtn"
-          >
-            إلغاء
-          </button>
-          <button
-            type="button"
-            class="adm-modal-btn adm-modal-btn--primary"
-            id="lsConfirmBtn"
-          >
-            إضافة
-          </button>
+          <button type="button" class="adm-modal-btn adm-modal-btn--cancel" id="lsCancelBtn">إلغاء</button>
+          <button type="button" class="adm-modal-btn adm-modal-btn--primary" id="lsConfirmBtn">إضافة</button>
         </div>
+      </div>
+    </div>
 
+    <!-- ===== مودال النقل ===== -->
+    <div class="adm-modal-overlay" id="moveModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="moveModalTitle">
+      <div class="adm-modal">
+        <h2 class="adm-modal-title" id="moveModalTitle">نقل الدرس</h2>
+        <p class="adm-modal-sub" id="moveModalSub"></p>
+        <div class="adm-modal-group">
+          <label class="adm-modal-label" for="moveGroup">المجموعة</label>
+          <select class="adm-modal-select" id="moveGroup"></select>
+        </div>
+        <div class="adm-modal-group">
+          <label class="adm-modal-label" for="moveUnit">الوحدة (اختيارية)</label>
+          <select class="adm-modal-select" id="moveUnit"></select>
+        </div>
+        <div class="adm-modal-actions">
+          <button type="button" class="adm-modal-btn adm-modal-btn--cancel" data-close="moveModal">إلغاء</button>
+          <button type="button" class="adm-modal-btn adm-modal-btn--primary" id="moveSave">نقل</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== مودال التأكيد ===== -->
+    <div class="adm-modal-overlay" id="confirmModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="confirmTitle">
+      <div class="adm-modal">
+        <h2 class="adm-modal-title" id="confirmTitle">تأكيد</h2>
+        <p class="lca-confirm-text" id="confirmText"></p>
+        <div class="adm-modal-actions">
+          <button type="button" class="adm-modal-btn adm-modal-btn--cancel" data-close="confirmModal">إلغاء</button>
+          <button type="button" class="adm-modal-btn adm-modal-btn--primary" id="confirmOk" style="background:var(--color-red-dark);border-color:var(--color-red-dark);">حذف</button>
+        </div>
       </div>
     </div>
 
