@@ -1,361 +1,297 @@
 /**
- * lessons.js
+ * lessons.js — واجهة الطالب: مجموعات ← وحدات ← دروس فيديو
  * ------------------------------------------------------------
- * منصة أ/ إسماعيل عماد التعليمية
- * تشغيل صفحة lessons.html
- *
- * المكان: /js/lessons.js
- *
- * المرجع:
- *   - الوثيقة الأصلية (بنود 31، 32، 33، 34، 60، 80، 81، 125، 149، 177)
- *   - Master Design System (بنود 18، 19، 20، 21، 33، 34، 35، 36، 60)
- *
- * ⚠️ قواعد:
- *   - YouTube URL يُتحقق منه دائمًا (بند 125).
- *   - الفيديو يُشغَّل داخل المنصة عبر Modal (بند 60 من Design System).
- *   - إزالة الـ iframe عند الإغلاق لإيقاف التشغيل.
- *
- * ⚠️ حالة الملف:
- *   - WORKER_URL = PLACEHOLDER_WORKER_URL (البند 207).
- *   - getLessons سترجع NETWORK_ERROR حتى بناء الـ Worker.
- *   - سيظهر Error State مع زر إعادة المحاولة.
+ * - الكتالوج يأتي جاهزًا من /api/lesson-catalog (منشور + مرحلة الطالب فقط).
+ * - الفيديو يُشغَّل داخل مشغل المنصة (Modal) بنفس طريقة YouTube الحالية،
+ *   وتُزال الـ iframe عند الإغلاق لإيقاف التشغيل.
+ * - لا يوجد صوت ولا ملازم هنا.
  * ------------------------------------------------------------
  */
 
-import {
-  onReady,
-  safeText,
-  showToast,
-  classifyLessonLink
-} from "./helpers.js";
-
+import { onReady, safeText, showToast, classifyLessonLink } from "./helpers.js";
 import { requireStudent } from "./router.js";
-
-import { getLessons, markLessonOpened } from "./api.js";
-
+import { getLessonCatalog, markLessonOpened } from "./api.js";
 import { renderBottomNav } from "./components.js";
-
-
 import { barai } from "./barai/safe.js";
 
-/* ============================================================
-   01 — المرجع للعناصر
-   ============================================================ */
+/* ---------- العناصر ---------- */
+const $ = (id) => document.getElementById(id);
+let titleEl, subtitleEl, skeletonEl, viewEl, emptyEl, errorEl, retryBtn, bottomNavSlot;
+let playerOverlay, playerTitleEl, playerBodyEl, playerCloseBtn, playerStatusEl, playerDescEl, prevBtn, nextBtn, listBtn;
 
-let subtitleEl       = null;
-let tabsWrapEl       = null;
-let tabsEl           = null;
-let skeletonEl       = null;
-let listEl           = null;
-let emptyEl          = null;
-let emptyTitleEl     = null;
-let errorEl          = null;
-let retryBtn         = null;
-let bottomNavSlot    = null;
+/* ---------- الحالة ---------- */
+let groups = [];            // الكتالوج
+let nav = { g: "", u: "" }; // المجموعة/الوحدة المفتوحة
+let ctx = [];               // قائمة الدروس المعروضة حاليًا (للسابق/التالي)
+let ctxIndex = -1;
+let loading = false;
 
-// Player
-let playerOverlay    = null;
-let playerTitleEl    = null;
-let playerBodyEl     = null;
-let playerCloseBtn   = null;
-
-
-/* ============================================================
-   02 — الحالة
-   ============================================================ */
-
-/** النوع النشط حاليًا */
-let currentKind = "audio"; // "audio" | "notes"
-
-/** الدروس المحمّلة حاليًا */
-let currentLessons = [];
-
-/** حالة التحميل */
-let isLoading = false;
-
-
-/* ============================================================
-   03 — تجميع العناصر
-   ============================================================ */
-
-function cacheElements() {
-  subtitleEl     = document.getElementById("lsSubtitle");
-  tabsWrapEl     = document.querySelector(".ls-tabs-wrap");
-  tabsEl         = document.querySelector(".ls-tabs");
-  skeletonEl     = document.getElementById("lsSkeleton");
-  listEl         = document.getElementById("lsList");
-  emptyEl        = document.getElementById("lsEmpty");
-  emptyTitleEl   = document.getElementById("lsEmptyTitle");
-  errorEl        = document.getElementById("lsError");
-  retryBtn       = document.getElementById("lsRetryBtn");
-  bottomNavSlot  = document.getElementById("bottomNavSlot");
-
-  playerOverlay  = document.getElementById("lsPlayerOverlay");
-  playerTitleEl  = document.getElementById("lsPlayerTitle");
-  playerBodyEl   = document.getElementById("lsPlayerBody");
-  playerCloseBtn = document.getElementById("lsPlayerCloseBtn");
+/* ---------- أدوات DOM (textContent فقط) ---------- */
+function h(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
 }
+const pct = (done, total) => (total > 0 ? Math.round((done / total) * 100) : 0);
+const num = (n) => Number(n) || 0;
 
-
-/* ============================================================
-   04 — إدارة الحالات
-   المرجع: Master Design System — بنود 34، 35، 36
-   ============================================================ */
-
-function showLoading() {
-  if (skeletonEl) skeletonEl.style.display = "";
-  if (listEl)     listEl.style.display = "none";
-  if (emptyEl)    emptyEl.style.display = "none";
-  if (errorEl)    errorEl.style.display = "none";
-}
-
-function showList() {
-  if (skeletonEl) skeletonEl.style.display = "none";
-  if (listEl)     listEl.style.display = "";
-  if (emptyEl)    emptyEl.style.display = "none";
-  if (errorEl)    errorEl.style.display = "none";
-}
-
-function showEmpty(kind) {
-  if (emptyTitleEl) {
-    emptyTitleEl.textContent = kind === "audio"
-      ? "لا توجد تسجيلات صوتية متاحة حاليًا"
-      : "لا توجد ملازم متاحة حاليًا";
+/** غلاف: تدرج + رسوم هندسية، ومع صورة إن وُجدت (https فقط) */
+function cover(el, g) {
+  el.classList.add("lc-cover");
+  el.dataset.color = g.color || "indigo";
+  const url = safeText(g.coverUrl);
+  if (/^https:\/\//i.test(url)) {
+    const img = document.createElement("img");
+    img.className = "lc-cover-img";
+    img.alt = "";
+    img.loading = "lazy";
+    img.referrerPolicy = "no-referrer";
+    img.addEventListener("load", () => { el.classList.add("has-img"); });
+    img.addEventListener("error", () => img.remove());
+    img.src = url;
+    el.appendChild(img);
+    el.appendChild(h("span", "lc-cover-shade"));
   }
-
-  if (skeletonEl) skeletonEl.style.display = "none";
-  if (listEl)     listEl.style.display = "none";
-  if (emptyEl)    emptyEl.style.display = "";
-  try { barai.empty(emptyEl, "empty.lessons"); } catch (e) { /* تجاهل */ }
-  if (errorEl)    errorEl.style.display = "none";
 }
 
-function showError() {
-  if (skeletonEl) skeletonEl.style.display = "none";
-  if (listEl)     listEl.style.display = "none";
-  if (emptyEl)    emptyEl.style.display = "none";
-  if (errorEl)    errorEl.style.display = "";
+function progressBar(done, total) {
+  const wrap = h("div");
+  const bar = h("div", "lc-progress");
+  const fill = document.createElement("i");
+  bar.appendChild(fill);
+  requestAnimationFrame(() => { fill.style.width = pct(done, total) + "%"; });
+  wrap.appendChild(bar);
+  return wrap;
 }
 
-
-/* ============================================================
-   05 — التابات
-   المرجع: Master Design System — بند 18
-   ============================================================ */
-
-/**
- * تحديث شكل التابات حسب النوع النشط.
- * @param {"video"|"audio"} kind
- */
-function updateTabsUI(kind) {
-  if (!tabsEl) return;
-
-  tabsEl.querySelectorAll(".ls-tab").forEach((tab) => {
-    const isActive = tab.dataset.kind === kind;
-    tab.classList.toggle("is-active", isActive);
-    tab.setAttribute("aria-selected", isActive ? "true" : "false");
-  });
+/* ---------- حالات العرض ---------- */
+function show(which) {
+  skeletonEl.style.display = which === "loading" ? "" : "none";
+  viewEl.style.display = which === "view" ? "" : "none";
+  emptyEl.style.display = which === "empty" ? "" : "none";
+  errorEl.style.display = which === "error" ? "" : "none";
+  if (which === "empty") { try { barai.empty(emptyEl, "empty.lessons"); } catch (e) { /* تجاهل */ } }
 }
 
-/**
- * ربط أحداث التابات.
- */
-function bindTabsEvents() {
-  if (!tabsEl) return;
-
-  tabsEl.querySelectorAll(".ls-tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      const kind = safeText(tab.dataset.kind);
-      if (!kind || kind === currentKind) return;
-
-      currentKind = kind;
-      updateTabsUI(kind);
-      loadLessonsForCurrentKind();
-    });
-  });
+/* ---------- التنقل (hash) ---------- */
+function readHash() {
+  const p = new URLSearchParams(location.hash.replace(/^#/, ""));
+  nav = { g: safeText(p.get("g")), u: safeText(p.get("u")) };
+}
+function go(g, u) {
+  const p = new URLSearchParams();
+  if (g) p.set("g", g);
+  if (u) p.set("u", u);
+  const s = p.toString();
+  history.pushState(null, "", s ? "#" + s : location.pathname + location.search);
+  readHash();
+  render();
+  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+function curGroup() { return groups.find((g) => g.id === nav.g) || null; }
+function curUnit(g) { return g && nav.u ? (g.units.find((u) => u.id === nav.u) || null) : null; }
 
-/* ============================================================
-   06 — كارت الدرس
-   المرجع: Master Design System — بند 19
-   ============================================================ */
+/* ---------- بطاقات ---------- */
+function groupCard(g, i) {
+  const card = h("button", "lc-card");
+  card.type = "button";
+  card.dataset.color = g.color;
+  card.style.animationDelay = Math.min(i, 8) * 50 + "ms";
 
-/**
- * بناء كارت درس.
- * @param {Object} lesson
- * @returns {HTMLElement}
- */
-function createLessonCard(lesson) {
-  const id       = safeText(lesson && lesson.id);
-  const title    = safeText(lesson && lesson.title) || "درس";
-  const kind     = safeText(lesson && lesson.kind) || currentKind;
+  const cv = h("div");
+  cover(cv, g);
+  cv.appendChild(h("h3", "", g.name));
+  card.appendChild(cv);
 
-  const card = document.createElement("article");
-  card.className = "ls-card" + (kind === "audio" ? " is-audio" : "");
-  card.setAttribute("role", "button");
-  card.setAttribute("tabindex", "0");
-  card.dataset.lessonId = id;
-
-  // أيقونة
-  const iconBox = document.createElement("div");
-  iconBox.className = "ls-card-icon";
-  iconBox.setAttribute("aria-hidden", "true");
-  const iconGlyph = document.createElement("span");
-  iconGlyph.className = "icon " + (kind === "audio" ? "icon-headphones" : kind === "notes" ? "icon-books" : "icon-video");
-  iconGlyph.setAttribute("aria-hidden", "true");
-  iconBox.appendChild(iconGlyph);
-
-  // Body
-  const body = document.createElement("div");
-  body.className = "ls-card-body";
-
-  const titleEl = document.createElement("h3");
-  titleEl.className = "ls-card-title";
-  titleEl.textContent = title;
-
-  const metaEl = document.createElement("p");
-  metaEl.className = "ls-card-meta";
-  metaEl.textContent = kind === "audio" ? "تسجيل صوتي" : kind === "notes" ? "ملزمة / ورق شرح" : "درس فيديو";
-
-  body.appendChild(titleEl);
-  body.appendChild(metaEl);
-
-  // سهم
-  const arrow = document.createElement("span");
-  arrow.className = "ls-card-arrow";
-  arrow.setAttribute("aria-hidden", "true");
-  arrow.textContent = "←";
-
-  card.appendChild(iconBox);
+  const body = h("div", "lc-body");
+  if (g.description) body.appendChild(h("p", "lc-desc", g.description));
+  const meta = h("div", "lc-meta");
+  if (g.unitCount) meta.appendChild(h("span", "", `${g.unitCount} وحدة`));
+  meta.appendChild(h("span", "", `${g.lessonCount} درس`));
+  body.appendChild(meta);
+  if (g.lessonCount > 0) {
+    body.appendChild(progressBar(g.doneCount, g.lessonCount));
+    body.appendChild(h("span", "lc-progress-label", `تم إنجاز ${pct(g.doneCount, g.lessonCount)}%`));
+  }
   card.appendChild(body);
-  card.appendChild(arrow);
-
-  // الأحداث
-  const open = () => openLessonPlayer(lesson);
-  card.addEventListener("click", open);
-  card.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      open();
-    }
-  });
-
+  card.addEventListener("click", () => go(g.id, ""));
   return card;
 }
 
-/**
- * عرض كل الدروس.
- */
-function renderLessons() {
-  if (!listEl) return;
+function lessonCard(lesson, list, idx) {
+  const card = h("article", "ls-card");
+  card.setAttribute("role", "button");
+  card.tabIndex = 0;
+  card.dataset.lessonId = lesson.id;
 
-  listEl.replaceChildren();
+  const iconBox = h("div", "ls-card-icon");
+  iconBox.setAttribute("aria-hidden", "true");
+  iconBox.appendChild(h("span", "icon icon-video"));
 
-  currentLessons.forEach((lesson) => {
-    listEl.appendChild(createLessonCard(lesson));
-  });
+  const body = h("div", "ls-card-body");
+  body.appendChild(h("h3", "ls-card-title", safeText(lesson.title) || "درس"));
+  const meta = h("p", "ls-card-meta", lesson.description ? lesson.description : "درس فيديو");
+  body.appendChild(meta);
+  if (lesson.done) body.appendChild(h("span", "lc-done", "✓ تمت المشاهدة"));
+
+  const arrow = h("span", "ls-card-arrow", "←");
+  arrow.setAttribute("aria-hidden", "true");
+  card.append(iconBox, body, arrow);
+
+  const open = () => { ctx = list; ctxIndex = idx; openLessonPlayer(lesson); };
+  card.addEventListener("click", open);
+  card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  return card;
 }
 
-
-/* ============================================================
-   07 — تحميل الدروس
-   المرجع: الوثيقة الأصلية — بنود 31، 32، 33، 34
-   ============================================================ */
-
-async function loadLessonsForCurrentKind() {
-  if (isLoading) return;
-  isLoading = true;
-
-  showLoading();
-
-  const result = await getLessons({ kind: currentKind });
-
-  isLoading = false;
-
-  if (!result || !result.success) {
-    showError();
-    return;
-  }
-
-  const list = (result.data && Array.isArray(result.data.lessons))
-    ? result.data.lessons
-    : [];
-
-  // فلترة إضافية حسب النوع (أمان مزدوج — البند 34)
-  currentLessons = list.filter((l) => {
-    if (!l || typeof l !== "object") return false;
-    const k = safeText(l.kind);
-    return k === currentKind;
-  });
-
-  if (currentLessons.length === 0) {
-    showEmpty(currentKind);
-    return;
-  }
-
-  // تحديث الـ subtitle
-  if (subtitleEl) {
-    subtitleEl.textContent = `${currentLessons.length} درس متاح`;
-  }
-
-  renderLessons();
-  showList();
-  try { barai.notify("lessons.open"); barai.settle(); } catch (e) { /* تجاهل */ }   // مساعدة/عودة لدرس سابق (من سجل محلي)
+function lessonsList(list) {
+  const wrap = h("div", "ls-list");
+  list.forEach((l, i) => wrap.appendChild(lessonCard(l, list, i)));
+  return wrap;
 }
 
+function emptyBox(title, text) {
+  const b = h("div", "lc-empty");
+  b.appendChild(h("b", "", title));
+  b.appendChild(document.createTextNode(text));
+  return b;
+}
 
-/* ============================================================
-   08 — Player Modal
-   المرجع: Master Design System — بند 60
-   ============================================================ */
+function backButton(label, fn) {
+  const b = h("button", "lc-back", "→ " + label);
+  b.type = "button";
+  b.addEventListener("click", fn);
+  return b;
+}
 
-/**
- * فتح مشغل الدرس.
- * @param {Object} lesson
- */
+/* ---------- الشاشات ---------- */
+function renderGroups() {
+  titleEl.textContent = "الدروس";
+  subtitleEl.textContent = `${groups.length} ${groups.length === 1 ? "منهج متاح" : "مناهج متاحة"}`;
+  viewEl.replaceChildren();
+  const grid = h("div", "lc-grid");
+  groups.forEach((g, i) => grid.appendChild(groupCard(g, i)));
+  viewEl.appendChild(grid);
+}
+
+function renderGroup(g) {
+  titleEl.textContent = g.name;
+  subtitleEl.textContent = `${g.lessonCount} درس`;
+  viewEl.replaceChildren();
+  viewEl.appendChild(backButton("كل المناهج", () => go("", "")));
+
+  const hero = h("section", "lc-hero");
+  cover(hero, g);
+  hero.appendChild(h("h2", "", g.name));
+  if (g.description) hero.appendChild(h("p", "", g.description));
+  if (g.lessonCount > 0) {
+    hero.appendChild(progressBar(g.doneCount, g.lessonCount));
+    hero.appendChild(h("p", "", `${g.doneCount} من ${g.lessonCount} — ${pct(g.doneCount, g.lessonCount)}%`));
+  }
+  viewEl.appendChild(hero);
+
+  if (g.units.length) {
+    const t = h("div", "lc-section-title", "الوحدات");
+    t.appendChild(h("small", "", `(${g.units.length})`));
+    viewEl.appendChild(t);
+    const stack = h("div", "lc-stack");
+    stack.dataset.color = g.color;
+    g.units.forEach((u, i) => {
+      const b = h("button", "lc-unit");
+      b.type = "button";
+      b.style.animationDelay = Math.min(i, 8) * 50 + "ms";
+      b.appendChild(h("div", "lc-unit-num", String(i + 1)));
+      const body = h("div", "lc-unit-body");
+      body.appendChild(h("h4", "", u.name));
+      body.appendChild(h("p", "", `${u.lessonCount} درس` + (u.lessonCount ? ` — تم ${u.doneCount}` : "")));
+      b.append(body, h("span", "ls-card-arrow", "←"));
+      b.addEventListener("click", () => go(g.id, u.id));
+      stack.appendChild(b);
+    });
+    viewEl.appendChild(stack);
+  }
+
+  if (g.lessons.length) {
+    const t = h("div", "lc-section-title", g.units.length ? "دروس المنهج" : "الدروس");
+    t.appendChild(h("small", "", `(${g.lessons.length})`));
+    viewEl.appendChild(t);
+    viewEl.appendChild(lessonsList(g.lessons));
+  }
+
+  if (!g.units.length && !g.lessons.length) {
+    viewEl.appendChild(emptyBox("لا توجد دروس بعد", "هيتم إضافة الفيديوهات قريبًا."));
+  }
+}
+
+function renderUnit(g, u) {
+  titleEl.textContent = u.name;
+  subtitleEl.textContent = g.name;
+  viewEl.replaceChildren();
+  viewEl.appendChild(backButton(g.name, () => go(g.id, "")));
+  if (u.description) viewEl.appendChild(h("p", "lc-crumbs", u.description));
+  if (!u.lessons.length) viewEl.appendChild(emptyBox("الوحدة فارغة حاليًا", "هتظهر الدروس هنا عند إضافتها."));
+  else viewEl.appendChild(lessonsList(u.lessons));
+}
+
+function render() {
+  if (!groups.length) { show("empty"); return; }
+  const g = curGroup();
+  const u = curUnit(g);
+  if (nav.g && !g) { nav = { g: "", u: "" }; }          // معرّف غير متاح للطالب → الرئيسية
+  else if (nav.u && !u) { nav.u = ""; }                  // وحدة غير متاحة → المجموعة
+  const gg = curGroup();
+  const uu = curUnit(gg);
+  if (uu) renderUnit(gg, uu);
+  else if (gg) renderGroup(gg);
+  else renderGroups();
+  show("view");
+}
+
+/* ---------- التحميل ---------- */
+async function load() {
+  if (loading) return;
+  loading = true;
+  show("loading");
+  const result = await getLessonCatalog();
+  loading = false;
+  if (!result || !result.success) { show("error"); return; }
+  groups = Array.isArray(result.data && result.data.groups) ? result.data.groups.map(normGroup) : [];
+  readHash();
+  render();
+  try { barai.notify("lessons.open"); barai.settle(); } catch (e) { /* تجاهل */ }
+}
+
+function normGroup(g) {
+  const units = Array.isArray(g.units) ? g.units : [];
+  return {
+    ...g,
+    units: units.map((u) => ({ ...u, lessons: Array.isArray(u.lessons) ? u.lessons : [], lessonCount: num(u.lessonCount), doneCount: num(u.doneCount) })),
+    lessons: Array.isArray(g.lessons) ? g.lessons : [],
+    unitCount: num(g.unitCount), lessonCount: num(g.lessonCount), doneCount: num(g.doneCount)
+  };
+}
+
+/* ---------- المشغل ---------- */
+function updatePlayerNav() {
+  prevBtn.disabled = ctxIndex <= 0;
+  nextBtn.disabled = ctxIndex < 0 || ctxIndex >= ctx.length - 1;
+  prevBtn.style.visibility = ctx.length > 1 ? "" : "hidden";
+  nextBtn.style.visibility = ctx.length > 1 ? "" : "hidden";
+}
+
 function openLessonPlayer(lesson) {
   try { barai.busy(true); } catch (e) { /* تجاهل */ }
-  if (!playerOverlay || !playerBodyEl || !playerTitleEl) return;
-
-  const title    = safeText(lesson && lesson.title) || "درس";
-  const kind     = safeText(lesson && lesson.kind) || "audio";
-  const url      = safeText(lesson && (lesson.url || lesson.youtubeUrl));
-  const link     = classifyLessonLink(url);
-
-  if (!link.open) {
-    showToast("الرابط غير صالح. تواصل مع الإدارة.", "error");
-    return;
-  }
+  const title = safeText(lesson && lesson.title) || "درس";
+  const url = safeText(lesson && (lesson.url || lesson.youtubeUrl));
+  const link = classifyLessonLink(url);
+  if (!link.open) { showToast("الرابط غير صالح. تواصل مع الإدارة.", "error"); return; }
 
   playerTitleEl.textContent = title;
   playerBodyEl.replaceChildren();
 
-  const mkOpenBtn = (label) => {
-    const a = document.createElement("a");
-    a.className = "btn btn-primary ls-open-link";
-    a.href = link.open;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    a.textContent = label;
-    a.style.cssText = "display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:0 20px;margin:12px;";
-    return a;
-  };
-
-  if (link.mode === "audio") {
-    // ملف صوت مباشر: مشغّل المتصفح الأصلي (أضمن على الموبايل)
-    const wrap = document.createElement("div");
-    wrap.style.cssText = "padding:24px 16px;text-align:center;";
-    const audio = document.createElement("audio");
-    audio.controls = true;
-    audio.preload = "none";
-    audio.src = link.src;
-    audio.style.cssText = "width:100%;";
-    audio.setAttribute("aria-label", title);
-    wrap.appendChild(audio);
-    wrap.appendChild(mkOpenBtn(kind === "notes" ? "فتح الملف" : "لو مش بيشتغل: افتح التسجيل"));
-    playerBodyEl.appendChild(wrap);
-  } else if (link.mode === "embed") {
+  if (link.mode === "embed") {
     const iframe = document.createElement("iframe");
     iframe.src = link.src;
     iframe.setAttribute("title", title);
@@ -364,134 +300,98 @@ function openLessonPlayer(lesson) {
     iframe.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
     iframe.setAttribute("loading", "lazy");
     playerBodyEl.appendChild(iframe);
-    // زر احتياطي لو العرض المدمج مش شغال على موبايل الطالب
-    const wrap = document.createElement("div");
-    wrap.style.cssText = "text-align:center;";
-    wrap.appendChild(mkOpenBtn(kind === "notes" ? "فتح الملزمة في صفحة جديدة" : "لو مش بيشتغل: افتح في صفحة جديدة"));
-    playerBodyEl.appendChild(wrap);
-  } else {
-    // أي رابط آخر (PDF مباشر مثلًا): زر فتح في تبويب جديد — يعمل على كل الأجهزة
-    const wrap = document.createElement("div");
-    wrap.style.cssText = "padding:32px 16px;text-align:center;";
-    const p = document.createElement("p");
-    p.textContent = kind === "notes" ? "اضغط لفتح الملزمة أو تحميلها." : "اضغط لفتح التسجيل.";
-    p.style.cssText = "margin:0 0 8px;font-weight:700;";
-    wrap.appendChild(p);
-    wrap.appendChild(mkOpenBtn(kind === "notes" ? "فتح الملزمة" : "فتح التسجيل"));
-    playerBodyEl.appendChild(wrap);
   }
+  const wrap = h("div");
+  wrap.style.cssText = "text-align:center;";
+  const a = h("a", "btn btn-primary ls-open-link", link.mode === "embed" ? "لو مش بيشتغل: افتح في صفحة جديدة" : "فتح الفيديو");
+  a.href = link.open; a.target = "_blank"; a.rel = "noopener noreferrer";
+  a.style.cssText = "display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:0 20px;margin:12px;";
+  wrap.appendChild(a);
+  playerBodyEl.appendChild(wrap);
 
-  // تسجيل فتح الدرس في الخلفية؛ فشل التسجيل لا يمنع تشغيل الدرس.
+  playerDescEl.textContent = safeText(lesson.description);
+  playerDescEl.style.display = lesson.description ? "" : "none";
+  setStatus(lesson);
+  updatePlayerNav();
+
+  /* تسجيل المشاهدة في الخلفية؛ فشله لا يمنع التشغيل */
   if (lesson && lesson.id) {
-    markLessonOpened(lesson.id).catch(() => {});
+    markLessonOpened(lesson.id).then((r) => {
+      if (r && r.success) markDone(lesson);
+    }).catch(() => {});
   }
-  try { if (lesson && lesson.id) barai.task("lesson", { id: String(lesson.id), title: title }); } catch (e) { /* تجاهل */ }   // ذاكرة محلية فقط: للعودة لنفس الدرس
+  try { if (lesson && lesson.id) barai.task("lesson", { id: String(lesson.id), title }); } catch (e) { /* تجاهل */ }
 
-  // إظهار
   playerOverlay.classList.add("is-open");
   playerOverlay.setAttribute("aria-hidden", "false");
-
   document.body.style.overflow = "hidden";
-
-  // زر الإغلاق في التركيز (للوصولية)
-  if (playerCloseBtn) {
-    setTimeout(() => playerCloseBtn.focus(), 100);
-  }
+  setTimeout(() => playerCloseBtn && playerCloseBtn.focus(), 100);
 }
 
-/**
- * إغلاق مشغل الدرس.
- * - إزالة الـ iframe لإيقاف التشغيل.
- */
-function closeLessonPlayer() {
+function setStatus(lesson) {
+  playerStatusEl.replaceChildren();
+  if (lesson.done) playerStatusEl.appendChild(h("span", "lc-done", "✓ تمت المشاهدة"));
+}
+
+/** تحديث محلي للتقدم بعد نجاح التسجيل (بدون إعادة تحميل) */
+function markDone(lesson) {
+  if (lesson.done) return;
+  lesson.done = true;
+  groups.forEach((g) => {
+    const inGroup = g.lessons.some((l) => l.id === lesson.id);
+    const unit = g.units.find((u) => u.lessons.some((l) => l.id === lesson.id));
+    if (unit) { unit.doneCount += 1; }
+    if (inGroup || unit) { g.doneCount += 1; }
+  });
+  groups.forEach((g) => g.lessons.concat(...g.units.map((u) => u.lessons)).forEach((l) => { if (l.id === lesson.id) l.done = true; }));
+  setStatus(lesson);
+}
+
+function closeLessonPlayer(refresh = true) {
   try { barai.busy(false); } catch (e) { /* تجاهل */ }
-  if (!playerOverlay || !playerBodyEl) return;
-
-  // إزالة الـ iframe فورًا لإيقاف الصوت/الفيديو
-  playerBodyEl.replaceChildren();
-
+  playerBodyEl.replaceChildren();          // إزالة iframe لإيقاف الفيديو
   playerOverlay.classList.remove("is-open");
   playerOverlay.setAttribute("aria-hidden", "true");
-
   document.body.style.overflow = "";
+  if (refresh) render();                   // تحديث حالة المشاهدة/النسب
 }
 
-
-/* ============================================================
-   09 — ربط أحداث الـ Player
-   ============================================================ */
-
-function bindPlayerEvents() {
-  if (playerCloseBtn) {
-    playerCloseBtn.addEventListener("click", closeLessonPlayer);
-  }
-
-  if (playerOverlay) {
-    playerOverlay.addEventListener("click", (e) => {
-      if (e.target === playerOverlay) closeLessonPlayer();
-    });
-  }
-
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && playerOverlay && playerOverlay.classList.contains("is-open")) {
-      closeLessonPlayer();
-    }
-  });
+function step(d) {
+  const i = ctxIndex + d;
+  if (i < 0 || i >= ctx.length) return;
+  ctxIndex = i;
+  openLessonPlayer(ctx[i]);
 }
-
-
-/* ============================================================
-   10 — Bottom Navigation
-   ============================================================ */
-
-function mountBottomNav() {
-  if (!bottomNavSlot) return;
-  bottomNavSlot.replaceChildren();
-  bottomNavSlot.appendChild(renderBottomNav());
-}
-
-
-/* ============================================================
-   11 — ربط أحداث عامة
-   ============================================================ */
 
 function bindEvents() {
-  if (retryBtn) {
-    retryBtn.addEventListener("click", () => {
-      loadLessonsForCurrentKind();
-    });
-  }
+  retryBtn.addEventListener("click", load);
+  playerCloseBtn.addEventListener("click", () => closeLessonPlayer());
+  listBtn.addEventListener("click", () => closeLessonPlayer());
+  prevBtn.addEventListener("click", () => step(-1));
+  nextBtn.addEventListener("click", () => step(1));
+  playerOverlay.addEventListener("click", (e) => { if (e.target === playerOverlay) closeLessonPlayer(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && playerOverlay.classList.contains("is-open")) closeLessonPlayer();
+  });
+  window.addEventListener("popstate", () => { if (groups.length) { readHash(); render(); } });
 }
-
-
-/* ============================================================
-   12 — التهيئة
-   ============================================================ */
 
 async function init() {
   try { barai.ambientMount(".ls-header-icon", "reading"); } catch (e) { /* تجاهل */ }
-  // حماية
   const session = requireStudent();
   if (!session) return;
 
-  cacheElements();
+  titleEl = $("lsTitle"); subtitleEl = $("lsSubtitle"); skeletonEl = $("lsSkeleton");
+  viewEl = $("lsView"); emptyEl = $("lsEmpty"); errorEl = $("lsError"); retryBtn = $("lsRetryBtn");
+  bottomNavSlot = $("bottomNavSlot");
+  playerOverlay = $("lsPlayerOverlay"); playerTitleEl = $("lsPlayerTitle"); playerBodyEl = $("lsPlayerBody");
+  playerCloseBtn = $("lsPlayerCloseBtn"); playerStatusEl = $("lsPlayerStatus"); playerDescEl = $("lsPlayerDesc");
+  prevBtn = $("lsPrevBtn"); nextBtn = $("lsNextBtn"); listBtn = $("lsListBtn");
 
-  mountBottomNav();
-
-  bindTabsEvents();
-  bindPlayerEvents();
+  bottomNavSlot.replaceChildren();
+  bottomNavSlot.appendChild(renderBottomNav());
   bindEvents();
-
-  // تحميل التسجيلات الصوتية افتراضيًا
-  currentKind = "audio";
-  updateTabsUI(currentKind);
-
-  await loadLessonsForCurrentKind();
+  await load();
 }
-
-
-/* ============================================================
-   13 — التشغيل
-   ============================================================ */
 
 onReady(init);
