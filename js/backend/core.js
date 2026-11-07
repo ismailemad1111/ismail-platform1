@@ -346,7 +346,20 @@ export function isLessonUrl(kind, v) {
   return kind === "video" ? isYouTubeUrl(v) : isHttpsUrl(v);
 }
 
+/* الأنواع القديمة (audio/notes) تبقى معروفة للقراءة فقط حتى لا نفسد البيانات القديمة؛
+   أما الدروس الجديدة فهي فيديو فقط. */
 export const LESSON_KINDS = ["video", "audio", "notes"];
+export const NEW_LESSON_KINDS = ["video"];
+export const DEFAULT_LESSON_KIND = "video";
+
+/** نوع الدرس المخزّن: القديم يبقى كما هو، وغير المحدد = فيديو */
+export function storedLessonKind(l) {
+  const k = l && typeof l.kind === "string" ? l.kind : "";
+  return LESSON_KINDS.includes(k) ? k : DEFAULT_LESSON_KIND;
+}
+
+/** ألوان المجموعات المسموحة (هوية بصرية جاهزة) */
+export const GROUP_COLORS = ["indigo", "violet", "teal", "amber", "rose", "sky", "emerald", "slate"];
 
 export function isYouTubeUrl(v) {
   const s = safeText(v);
