@@ -1,842 +1,452 @@
 /**
- * admin-lessons.js
- * ------------------------------------------------------------
- * منصة أ/ إسماعيل عماد التعليمية
- * تشغيل صفحة admin/lessons.html
- *
- * المكان: /js/admin-lessons.js
- *
- * المرجع:
- *   - الوثيقة الأصلية (بنود 31، 32، 33، 34، 80، 81، 98، 125)
- *   - Master Design System (بند 58)
- *
- * ⚠️ قواعد:
- *   - الحماية الحقيقية في Worker (بند 109).
- *   - التحقق من روابط YouTube (بند 125).
- *   - الفلترة على الفرونت (بند 163).
- *   - البحث بـ debounce (بند 162).
- *
- * ⚠️ حالة الملف:
- *   - WORKER_URL = PLACEHOLDER_WORKER_URL (البند 207).
- *   - workerFetch سترجع NETWORK_ERROR حتى بناء الـ Worker.
- * ------------------------------------------------------------
+ * admin-lessons.js — إدارة المجموعات التعليمية ← الوحدات ← دروس الفيديو
+ * الحماية الحقيقية في الباك إند وقواعد Firestore؛ هذه واجهة فقط.
  */
-
-
-import {
-  onReady,
-  safeText,
-  showToast,
-  debounce,
-  formatDate,
-  extractYouTubeID,
-  validateYouTubeURL,
-  validateHttpsURL
-} from "./helpers.js";
-
-import {
-  requireAdmin,
-  getSession
-} from "./router.js";
-
-
-/* ============================================================
-   01 — ثوابت
-   ============================================================ */
-
-const REQUEST_TIMEOUT_MS = 20000;
-
-const ERRORS = {
-  NETWORK_ERROR: "NETWORK_ERROR",
-  TIMEOUT:       "TIMEOUT",
-  SERVER_ERROR:  "SERVER_ERROR",
-  UNAUTHORIZED:  "UNAUTHORIZED",
-  NOT_FOUND:     "NOT_FOUND",
-  BAD_REQUEST:   "BAD_REQUEST"
-};
-
-const ERROR_MESSAGES = {
-  NETWORK_ERROR: "لا يوجد اتصال بالإنترنت.",
-  TIMEOUT:       "انتهت مدة الطلب.",
-  SERVER_ERROR:  "حدث خطأ. حاول مرة أخرى.",
-  UNAUTHORIZED:  "انتهت الجلسة.",
-  NOT_FOUND:     "الدرس غير موجود.",
-  BAD_REQUEST:   "البيانات المُرسَلة غير صحيحة."
-};
+import { onReady, safeText, showToast, debounce, extractYouTubeID } from "./helpers.js";
+import { requireAdmin } from "./router.js";
+import { backendRequest } from "./backend/index.js";
 
 const STAGE_NAMES = {
-  grade_4: "الرابع الابتدائي",
-  grade_5: "الخامس الابتدائي",
-  grade_6: "السادس الابتدائي",
-  prep_1:  "الأول الإعدادي",
-  prep_2:  "الثاني الإعدادي",
-  prep_3:  "الثالث الإعدادي",
-  sec_1:   "الأول الثانوي",
-  sec_2:   "الثاني الثانوي",
-  sec_3:   "الثالث الثانوي"
+  grade_4: "الرابع الابتدائي", grade_5: "الخامس الابتدائي", grade_6: "السادس الابتدائي",
+  prep_1: "الأول الإعدادي", prep_2: "الثاني الإعدادي", prep_3: "الثالث الإعدادي",
+  sec_1: "الأول الثانوي", sec_2: "الثاني الثانوي", sec_3: "الثالث الثانوي"
 };
+const stageName = (k) => STAGE_NAMES[safeText(k)] || "—";
+const NONE = "__none";   // مجموعة افتراضية للدروس غير المصنفة (قديمة)
 
-function getStageName(key) {
-  const k = safeText(key);
-  return STAGE_NAMES[k] || "—";
+const $ = (id) => document.getElementById(id);
+const api = (m, p, body) => backendRequest(p, { method: m, body });
+
+let groups = [], units = [], lessons = [];
+let stageFilter = "all", search = "", openGroup = "";
+let editingGroup = null, editingUnit = null, editingLesson = null, unitForGroup = "";
+let moveId = null, confirmFn = null, busy = false;
+let pickedColor = "indigo";
+
+/* ---------- DOM ---------- */
+function h(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
+}
+function btn(label, cls, fn) {
+  const b = h("button", "lca-btn is-sm " + (cls || ""), label);
+  b.type = "button";
+  b.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
+  return b;
+}
+const openM = (id) => { const m = $(id); m.classList.add("is-open"); m.setAttribute("aria-hidden", "false"); };
+const closeM = (id) => { const m = $(id); m.classList.remove("is-open"); m.setAttribute("aria-hidden", "true"); };
+
+/* ---------- نوع الدرس (يصلح تصنيف notes) ---------- */
+const kindOf = (l) => (l.kind === "audio" || l.kind === "notes") ? l.kind : "video";
+const isVideo = (l) => kindOf(l) === "video";
+const KIND_LABEL = { audio: "صوت (قديم)", notes: "ملزمة (قديمة)" };
+
+/* ---------- تحميل ---------- */
+function state(which) {
+  $("lsSkeleton").style.display = which === "loading" ? "" : "none";
+  $("lsError").style.display = which === "error" ? "" : "none";
+  $("lsEmpty").style.display = which === "empty" ? "" : "none";
+  $("lsGroupGrid").style.display = which === "grid" ? "" : "none";
+  $("lsGroupView").style.display = which === "group" ? "" : "none";
+  $("lsHome").style.display = (which === "group") ? "none" : "";
 }
 
-
-/* ============================================================
-   02 — المرجع للعناصر
-   ============================================================ */
-
-let headerSubEl    = null;
-let createBtn      = null;
-
-let statsRowEl     = null;
-let statAllEl      = null;
-let statVideoEl    = null;
-let statAudioEl    = null;
-
-let searchInput    = null;
-let stageFiltersEl = null;
-
-let skeletonEl     = null;
-let listEl         = null;
-let emptyEl        = null;
-let errorEl        = null;
-let retryBtn       = null;
-
-// Modal
-let lsModalEl      = null;
-let lsModalTitleEl = null;
-let lsModalSubEl   = null;
-let lsTitleInput   = null;
-let lsKindSel      = null;
-let lsStageSel     = null;
-let lsUrlInput     = null;
-let lsPreviewEl    = null;
-let lsCancelBtn    = null;
-let lsConfirmBtn   = null;
-
-
-/* ============================================================
-   03 — الحالة
-   ============================================================ */
-
-let allLessons = [];
-let currentKind = "all";     // all | video | audio
-let currentStage = "all";    // all | grade_4 | ...
-let currentSearch = "";
-let isLoading = false;
-
-let editingId = null;
-let isSaving = false;
-let previewVideoId = null;
-
-
-/* ============================================================
-   04 — طلب HTTP موحد
-   ============================================================ */
-
-import { backendRequest } from "./backend/index.js";
-async function workerFetch(endpoint, options = {}) {
-  // بدون Worker: التنفيذ داخل المتصفح عبر Firestore (js/backend/)
-  return backendRequest(endpoint, options);
+async function load() {
+  state("loading");
+  const [g, u, l] = await Promise.all([
+    api("GET", "/api/admin/lesson-groups"), api("GET", "/api/admin/lesson-units"), api("GET", "/api/admin/lessons")
+  ]);
+  if (![g, u, l].every((r) => r && r.success)) { state("error"); return; }
+  groups = g.data.groups; units = u.data.units; lessons = l.data.lessons;
+  render();
 }
 
-
-/* ============================================================
-   05 — تجميع العناصر
-   ============================================================ */
-
-function cacheElements() {
-  headerSubEl    = document.getElementById("lsHeaderSub");
-  createBtn      = document.getElementById("lsCreateBtn");
-
-  statsRowEl     = document.getElementById("lsStats");
-  statAllEl      = document.getElementById("statLsAll");
-  statVideoEl    = document.getElementById("statLsVideo");
-  statAudioEl    = document.getElementById("statLsAudio");
-
-  searchInput    = document.getElementById("lsSearchInput");
-  stageFiltersEl = document.getElementById("lsStageFilters");
-
-  skeletonEl     = document.getElementById("lsSkeleton");
-  listEl         = document.getElementById("lsList");
-  emptyEl        = document.getElementById("lsEmpty");
-  errorEl        = document.getElementById("lsError");
-  retryBtn       = document.getElementById("lsRetryBtn");
-
-  lsModalEl      = document.getElementById("lsModal");
-  lsModalTitleEl = document.getElementById("lsModalTitle");
-  lsModalSubEl   = document.getElementById("lsModalSub");
-  lsTitleInput   = document.getElementById("lsTitleInput");
-  lsKindSel      = document.getElementById("lsKindSelect");
-  lsStageSel     = document.getElementById("lsStageSelect");
-  lsUrlInput     = document.getElementById("lsUrlInput");
-  lsPreviewEl    = document.getElementById("lsPreview");
-  lsCancelBtn    = document.getElementById("lsCancelBtn");
-  lsConfirmBtn   = document.getElementById("lsConfirmBtn");
+function render() {
+  const videos = lessons.filter(isVideo).length;
+  $("statGroups").textContent = groups.length;
+  $("statUnits").textContent = units.length;
+  $("statVideos").textContent = videos;
+  if (openGroup) return renderGroupView();
+  $("lsHeaderTitle").textContent = "الدروس";
+  renderHome();
 }
 
-
-/* ============================================================
-   06 — حالات الصفحة
-   ============================================================ */
-
-function showLoading() {
-  if (skeletonEl) skeletonEl.style.display = "";
-  if (listEl)     listEl.style.display = "none";
-  if (emptyEl)    emptyEl.style.display = "none";
-  if (errorEl)    errorEl.style.display = "none";
+/* ---------- الرئيسية ---------- */
+function unitsOf(gid) { return units.filter((u) => u.lessonGroupId === gid).sort((a, b) => a.order - b.order); }
+function lessonsOf(gid, uid) {
+  return lessons.filter((l) => (l.lessonGroupId || NONE) === gid && (uid === undefined || (l.unitId || "") === uid))
+    .sort((a, b) => a.order - b.order);
 }
-function showList() {
-  if (skeletonEl) skeletonEl.style.display = "none";
-  if (listEl)     listEl.style.display = "";
-  if (emptyEl)    emptyEl.style.display = "none";
-  if (errorEl)    errorEl.style.display = "none";
-}
-function showEmpty() {
-  if (skeletonEl) skeletonEl.style.display = "none";
-  if (listEl)     listEl.style.display = "none";
-  if (emptyEl)    emptyEl.style.display = "";
-  if (errorEl)    errorEl.style.display = "none";
-}
-function showError() {
-  if (skeletonEl) skeletonEl.style.display = "none";
-  if (listEl)     listEl.style.display = "none";
-  if (emptyEl)    emptyEl.style.display = "none";
-  if (errorEl)    errorEl.style.display = "";
-}
+const loose = () => lessons.filter((l) => !l.lessonGroupId);
 
-
-/* ============================================================
-   07 — إحصائيات
-   ============================================================ */
-
-function updateStats() {
-  const total = allLessons.length;
-  const video = allLessons.filter((l) => l && l.kind === "notes").length;
-  const audio = allLessons.filter((l) => l && l.kind === "audio").length;
-
-  if (statAllEl)   statAllEl.textContent   = String(total);
-  if (statVideoEl) statVideoEl.textContent = String(video);
-  if (statAudioEl) statAudioEl.textContent = String(audio);
-}
-
-
-/* ============================================================
-   08 — الفلترة والبحث
-   ============================================================ */
-
-function getFilteredLessons() {
-  let list = Array.isArray(allLessons) ? allLessons.slice() : [];
-
-  // فلترة النوع
-  if (currentKind !== "all") {
-    list = list.filter((l) => l && l.kind === currentKind);
+function groupCard(g, i) {
+  const card = h("article", "lc-card lca-card");
+  card.dataset.color = g.color; card.style.animationDelay = Math.min(i, 8) * 40 + "ms";
+  const cv = h("div");
+  cv.classList.add("lc-cover");
+  if (/^https:\/\//i.test(g.coverUrl || "")) {
+    const img = document.createElement("img"); img.className = "lc-cover-img"; img.alt = ""; img.loading = "lazy";
+    img.referrerPolicy = "no-referrer"; img.addEventListener("load", () => cv.classList.add("has-img")); img.addEventListener("error", () => img.remove());
+    img.src = g.coverUrl; cv.append(img, h("span", "lc-cover-shade"));
   }
-
-  // فلترة المرحلة
-  if (currentStage !== "all") {
-    list = list.filter((l) => l && l.stage === currentStage);
-  }
-
-  // البحث بالعنوان
-  const q = safeText(currentSearch).toLowerCase();
-  if (q) {
-    list = list.filter((l) => {
-      if (!l) return false;
-      const title = safeText(l.title).toLowerCase();
-      return title.includes(q);
-    });
-  }
-
-  // ترتيب: الأحدث أولاً
-  list.sort((a, b) => {
-    const ta = toTime(a && a.createdAt);
-    const tb = toTime(b && b.createdAt);
-    return tb - ta;
-  });
-
-  return list;
-}
-
-function toTime(v) {
-  if (!v) return 0;
-  if (typeof v.toDate === "function") { try { return v.toDate().getTime(); } catch (e) { return 0; } }
-  if (v instanceof Date) return v.getTime();
-  if (typeof v === "number") return v;
-  if (typeof v === "string") { const t = new Date(v).getTime(); return isNaN(t) ? 0 : t; }
-  return 0;
-}
-
-
-/* ============================================================
-   09 — بناء كارت الدرس
-   ============================================================ */
-
-function createLessonCard(lesson) {
-  const id        = safeText(lesson && lesson.id);
-  const title     = safeText(lesson && lesson.title) || "درس";
-  const kind      = safeText(lesson && lesson.kind) || "video";
-  const stage     = safeText(lesson && lesson.stage);
-  const url       = safeText(lesson && (lesson.url || lesson.youtubeUrl));
-  const createdAt = lesson && lesson.createdAt;
-  const videoId   = extractYouTubeID(url);
-
-  const card = document.createElement("article");
-  card.className = "lesson-card";
-  card.dataset.lessonId = id;
-
-  // ---------- Top ----------
-  const top = document.createElement("div");
-  top.className = "lesson-card-top";
-
-  // Thumbnail
-  const thumb = document.createElement("div");
-  thumb.className = "lesson-thumb";
-
-  if (kind === "video" && videoId) {
-    const img = document.createElement("img");
-    img.src = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
-    img.alt = title;
-    img.loading = "lazy";
-    img.referrerPolicy = "no-referrer";
-    img.onerror = () => {
-      // لو فشل تحميل الصورة → نعرض icon
-      thumb.replaceChildren();
-      const icon = document.createElement("div");
-      icon.className = "lesson-thumb-icon";
-      icon.textContent = "🎥";
-      thumb.appendChild(icon);
-    };
-    thumb.appendChild(img);
-
-    const playIcon = document.createElement("div");
-    playIcon.className = "lesson-thumb-icon";
-    playIcon.textContent = "▶️";
-    playIcon.style.background = "transparent";
-    playIcon.style.fontSize = "30px";
-    playIcon.style.textShadow = "0 0 6px rgba(0,0,0,0.6)";
-    thumb.appendChild(playIcon);
-
-  } else {
-    const icon = document.createElement("div");
-    icon.className = "lesson-thumb-icon";
-    icon.textContent = kind === "audio" ? "🎧" : kind === "notes" ? "📄" : "🎥";
-    thumb.appendChild(icon);
-  }
-
-  // Body
-  const body = document.createElement("div");
-  body.className = "lesson-body";
-
-  const titleEl = document.createElement("h3");
-  titleEl.className = "lesson-title";
-  titleEl.textContent = title;
-  body.appendChild(titleEl);
-
-  const badges = document.createElement("div");
-  badges.className = "lesson-badges";
-
-  const kindBadge = document.createElement("span");
-  kindBadge.className = kind === "audio"
-    ? "lesson-badge lesson-badge--kind-audio"
-    : kind === "notes" ? "lesson-badge lesson-badge--kind-notes" : "lesson-badge lesson-badge--kind-video";
-  kindBadge.textContent = kind === "audio" ? "🎧 صوت" : kind === "notes" ? "📄 ملزمة" : "🎥 فيديو (قديم)";
-  badges.appendChild(kindBadge);
-
-  if (stage) {
-    const sBadge = document.createElement("span");
-    sBadge.className = "lesson-badge lesson-badge--stage";
-    sBadge.textContent = getStageName(stage);
-    badges.appendChild(sBadge);
-  }
-
-  body.appendChild(badges);
-
-  if (createdAt) {
-    const meta = document.createElement("div");
-    meta.className = "lesson-meta";
-    const item = document.createElement("span");
-    item.className = "lesson-meta-item";
-    const ic = document.createElement("span"); ic.textContent = "📅";
-    const tx = document.createElement("span"); tx.textContent = formatDate(createdAt) || "—";
-    item.appendChild(ic); item.appendChild(tx);
-    meta.appendChild(item);
-    body.appendChild(meta);
-  }
-
-  top.appendChild(thumb);
-  top.appendChild(body);
-  card.appendChild(top);
-
-  // ---------- Actions ----------
-  const actions = document.createElement("div");
-  actions.className = "lesson-actions";
-
-  // معاينة (فتح YouTube في تاب جديد)
-  if (videoId) {
-    const previewBtn = document.createElement("a");
-    previewBtn.className = "lesson-action-btn lesson-action-btn--info";
-    previewBtn.href = videoId ? `https://www.youtube.com/watch?v=${videoId}` : url;
-    previewBtn.target = "_blank";
-    previewBtn.rel = "noopener noreferrer";
-    previewBtn.textContent = "👁️ معاينة";
-    actions.appendChild(previewBtn);
-  }
-
-  // تعديل
-  const editBtn = document.createElement("button");
-  editBtn.type = "button";
-  editBtn.className = "lesson-action-btn";
-  editBtn.textContent = "✏️ تعديل";
-  editBtn.addEventListener("click", () => openLessonModal(lesson));
-  actions.appendChild(editBtn);
-
-  // حذف
-  const delBtn = document.createElement("button");
-  delBtn.type = "button";
-  delBtn.className = "lesson-action-btn lesson-action-btn--danger";
-  delBtn.textContent = "🗑️ حذف";
-  delBtn.addEventListener("click", () => handleDelete(id, title));
-  actions.appendChild(delBtn);
-
-  card.appendChild(actions);
-
+  cv.appendChild(h("span", "lc-badge" + (g.active ? "" : " is-draft"), g.active ? "منشورة" : "مسودة"));
+  cv.appendChild(h("h3", "", g.name));
+  cv.addEventListener("click", () => enterGroup(g.id));
+  card.appendChild(cv);
+  const body = h("div", "lc-body");
+  if (g.description) body.appendChild(h("p", "lc-desc", g.description));
+  const meta = h("div", "lc-meta");
+  meta.append(h("span", "", stageName(g.stage)), h("span", "", `${g.unitCount} وحدة`), h("span", "", `${g.lessonCount} درس`));
+  body.appendChild(meta);
+  card.appendChild(body);
+  const act = h("div", "lca-card-actions");
+  act.append(
+    btn("فتح", "is-primary", () => enterGroup(g.id)),
+    btn("تعديل", "", () => openGroupModal(g)),
+    btn(g.active ? "إخفاء" : "نشر", "", () => togglePublish("groups", g)),
+    btn("↑", "", () => moveItem("groups", g.id, -1)),
+    btn("↓", "", () => moveItem("groups", g.id, 1)),
+    btn("حذف", "is-danger", () => askDeleteGroup(g))
+  );
+  card.appendChild(act);
   return card;
 }
 
+function renderHome() {
+  const q = search.toLowerCase();
+  let list = groups.filter((g) => stageFilter === "all" || g.stage === stageFilter);
+  if (q) {
+    list = list.filter((g) =>
+      g.name.toLowerCase().includes(q) ||
+      unitsOf(g.id).some((u) => u.name.toLowerCase().includes(q)) ||
+      lessonsOf(g.id).some((l) => l.title.toLowerCase().includes(q)));
+  }
+  const grid = $("lsGroupGrid");
+  grid.replaceChildren();
+  list.forEach((g, i) => grid.appendChild(groupCard(g, i)));
 
-/* ============================================================
-   10 — عرض القائمة
-   ============================================================ */
-
-function renderLessons() {
-  if (!listEl) return;
-
-  const list = getFilteredLessons();
-
-  if (list.length === 0) {
-    if (currentSearch || currentKind !== "all" || currentStage !== "all") {
-      listEl.replaceChildren();
-      const empty = document.createElement("div");
-      empty.className = "adm-state";
-      const icon = document.createElement("div");
-      icon.className = "adm-state-icon"; icon.textContent = "🔍";
-      const title = document.createElement("h3");
-      title.className = "adm-state-title"; title.textContent = "لا توجد نتائج مطابقة";
-      const text = document.createElement("p");
-      text.className = "adm-state-text"; text.textContent = "جرّب تعديل الفلتر أو البحث.";
-      empty.appendChild(icon); empty.appendChild(title); empty.appendChild(text);
-      listEl.appendChild(empty);
-      showList();
-      return;
-    }
-    showEmpty();
-    return;
+  /* دروس قديمة بلا مجموعة: بطاقة افتراضية حتى لا تضيع من الإدارة */
+  const lo = loose();
+  if (lo.length && stageFilter === "all" && !q) {
+    const card = h("article", "lc-card lca-card");
+    card.dataset.color = "slate";
+    const cv = h("div", "lc-cover"); cv.appendChild(h("h3", "", "دروس غير مصنفة"));
+    cv.addEventListener("click", () => enterGroup(NONE));
+    card.appendChild(cv);
+    const body = h("div", "lc-body");
+    body.appendChild(h("p", "lc-desc", "دروس قديمة أو بلا مجموعة. انقلها إلى مجموعة لتظهر ضمن منهج."));
+    const meta = h("div", "lc-meta"); meta.appendChild(h("span", "", `${lo.length} درس`)); body.appendChild(meta);
+    card.appendChild(body);
+    const act = h("div", "lca-card-actions"); act.appendChild(btn("فتح", "is-primary", () => enterGroup(NONE))); card.appendChild(act);
+    grid.appendChild(card);
   }
 
-  listEl.replaceChildren();
-  list.forEach((l) => listEl.appendChild(createLessonCard(l)));
-  showList();
+  if (!groups.length && !lo.length) {
+    $("lsEmptyTitle").textContent = "لا توجد مجموعات بعد";
+    $("lsEmptyText").textContent = "أنشئ أول مجموعة تعليمية (مثل: منهج الشهر الأول) ثم أضف إليها الفيديوهات.";
+    return state("empty");
+  }
+  if (!grid.children.length) {
+    $("lsEmptyTitle").textContent = "لا نتائج مطابقة";
+    $("lsEmptyText").textContent = "جرّب كلمة بحث أو مرحلة أخرى.";
+    return state("empty");
+  }
+  state("grid");
 }
 
+/* ---------- داخل المجموعة ---------- */
+function enterGroup(id) { openGroup = id; render(); window.scrollTo({ top: 0 }); }
+function leaveGroup() { openGroup = ""; render(); }
 
-/* ============================================================
-   11 — تحميل الدروس
-   ============================================================ */
-
-async function loadLessons() {
-  if (isLoading) return;
-  isLoading = true;
-
-  showLoading();
-
-  const result = await workerFetch("/api/admin/lessons");
-
-  isLoading = false;
-
-  if (!result || !result.success) {
-    const code = (result && result.error && result.error.code) || ERRORS.SERVER_ERROR;
-    if (code === ERRORS.UNAUTHORIZED) {
-      showToast(ERROR_MESSAGES.UNAUTHORIZED, "warning");
-      setTimeout(() => { window.location.href = "login.html"; }, 1500);
-      return;
-    }
-    showError();
-    return;
-  }
-
-  const data = (result.data && typeof result.data === "object") ? result.data : {};
-  const list = Array.isArray(data.lessons) ? data.lessons : [];
-
-  allLessons = list.filter((l) => l && l.id);
-
-  if (headerSubEl) {
-    headerSubEl.textContent = `${allLessons.length} درس`;
-  }
-
-  updateStats();
-  renderLessons();
+function lessonRow(l, siblings) {
+  const row = h("div", "lca-lesson");
+  const th = h("div", "lca-lesson-thumb");
+  const vid = isVideo(l) ? extractYouTubeID(l.url) : null;
+  if (vid) {
+    const img = document.createElement("img"); img.alt = ""; img.loading = "lazy"; img.referrerPolicy = "no-referrer";
+    img.src = `https://img.youtube.com/vi/${vid}/mqdefault.jpg`; img.addEventListener("error", () => { img.remove(); th.textContent = "🎬"; });
+    th.appendChild(img);
+  } else th.textContent = "🎬";
+  const info = h("div", "lca-lesson-info");
+  info.appendChild(h("b", "", l.title));
+  const tags = h("small");
+  tags.appendChild(h("span", "lca-tag " + (l.active ? "is-live" : "is-draft"), l.active ? "منشور" : "مسودة"));
+  if (!isVideo(l)) tags.appendChild(h("span", "lca-tag is-legacy", KIND_LABEL[kindOf(l)]));
+  tags.appendChild(document.createTextNode(`#${l.order}`));
+  info.appendChild(tags);
+  const act = h("div", "lca-row-actions");
+  const i = siblings.indexOf(l);
+  act.append(
+    btn("تعديل", "", () => openLessonModal(l)),
+    btn("نقل", "", () => openMove(l)),
+    btn(l.active ? "إخفاء" : "نشر", "", () => togglePublish("lessons", l)),
+    btn("↑", "", () => reorderLessons(siblings, i, -1)),
+    btn("↓", "", () => reorderLessons(siblings, i, 1)),
+    btn("حذف", "is-danger", () => confirm_(`حذف الدرس «${l.title}» نهائيًا؟`, async () => { await run(api("DELETE", `/api/admin/lessons/${l.id}`), "تم حذف الدرس"); }))
+  );
+  row.append(th, info, act);
+  return row;
 }
 
+function lessonsBlock(list) {
+  const wrap = h("div", "lca-lessons");
+  if (!list.length) wrap.appendChild(h("div", "lc-empty", "لا توجد فيديوهات هنا بعد."));
+  list.forEach((l) => wrap.appendChild(lessonRow(l, list)));
+  return wrap;
+}
 
-/* ============================================================
-   12 — Preview
-   ============================================================ */
+function renderGroupView() {
+  const v = $("lsGroupView"); v.replaceChildren();
+  const virtual = openGroup === NONE;
+  const g = virtual ? { id: NONE, name: "دروس غير مصنفة", description: "", color: "slate", stage: "", active: true } : groups.find((x) => x.id === openGroup);
+  if (!g) { openGroup = ""; return renderHome(); }
+  $("lsHeaderTitle").textContent = g.name;
 
+  const back = h("button", "lc-back", "→ كل المجموعات"); back.type = "button"; back.addEventListener("click", leaveGroup);
+  v.appendChild(back);
+
+  const hero = h("section", "lc-hero lc-cover"); hero.dataset.color = g.color;
+  hero.append(h("h2", "", g.name));
+  if (g.description) hero.appendChild(h("p", "", g.description));
+  if (!virtual) {
+    hero.appendChild(h("p", "", `${stageName(g.stage)} — ${g.active ? "منشورة" : "مسودة"}`));
+    const ha = h("div", "lca-hero-actions");
+    ha.append(
+      btn("+ إنشاء وحدة", "", () => openUnitModal(null, g.id)),
+      btn("+ إضافة فيديو", "", () => openLessonModal(null, { groupId: g.id })),
+      btn("تعديل المجموعة", "", () => openGroupModal(g))
+    );
+    hero.appendChild(ha);
+  }
+  v.appendChild(hero);
+
+  const us = virtual ? [] : unitsOf(g.id);
+  us.forEach((u, i) => {
+    const box = h("section", "lca-unit-box");
+    const head = h("div", "lca-unit-head");
+    const t = h("div"); const h4 = h("h4", "", u.name);
+    h4.appendChild(h("span", "lca-tag " + (u.active ? "is-live" : "is-draft"), u.active ? "منشورة" : "مسودة"));
+    t.appendChild(h4); if (u.description) t.appendChild(h("p", "", u.description));
+    const act = h("div", "lca-row-actions");
+    act.append(
+      btn("+ فيديو", "is-primary", () => openLessonModal(null, { groupId: g.id, unitId: u.id })),
+      btn("تعديل", "", () => openUnitModal(u, g.id)),
+      btn(u.active ? "إخفاء" : "نشر", "", () => togglePublish("units", u)),
+      btn("↑", "", () => moveUnit(us, i, -1)), btn("↓", "", () => moveUnit(us, i, 1)),
+      btn("حذف", "is-danger", () => confirm_(`حذف الوحدة «${u.name}»؟ دروسها لن تُحذف، وستنتقل إلى المجموعة مباشرة.`, async () => { await run(api("DELETE", `/api/admin/lesson-units/${u.id}`), "تم حذف الوحدة"); }))
+    );
+    head.append(t, act); box.appendChild(head);
+    box.appendChild(lessonsBlock(lessonsOf(g.id, u.id)));
+    v.appendChild(box);
+  });
+
+  const direct = lessonsOf(g.id, "");
+  if (direct.length || !us.length) {
+    const box = h("section", "lca-unit-box");
+    const head = h("div", "lca-unit-head");
+    head.appendChild(h("h4", "", us.length ? "دروس مباشرة في المجموعة" : "الدروس"));
+    if (!virtual) head.appendChild(btn("+ إضافة فيديو", "is-primary", () => openLessonModal(null, { groupId: g.id })));
+    box.appendChild(head); box.appendChild(lessonsBlock(direct));
+    v.appendChild(box);
+  }
+  state("group");
+}
+
+/* ---------- عمليات مشتركة ---------- */
+async function run(promise, okMsg) {
+  if (busy) return false;
+  busy = true;
+  try {
+    const r = await promise;
+    if (!r || !r.success) { showToast((r && r.error && r.error.message) || "تعذر تنفيذ العملية.", "error"); return false; }
+    if (okMsg) showToast(okMsg, "success");
+    await load();
+    return true;
+  } finally { busy = false; }
+}
+
+function confirm_(text, fn) { $("confirmText").textContent = text; confirmFn = fn; openM("confirmModal"); }
+
+async function togglePublish(kind, item) {
+  const path = kind === "groups" ? "lesson-groups" : kind === "units" ? "lesson-units" : "lessons";
+  await run(api("PATCH", `/api/admin/${path}/${item.id}`, { active: !item.active }), item.active ? "تم الإخفاء" : "تم النشر");
+}
+
+async function moveItem(kind, id, d) {
+  const list = groups.filter((g) => stageFilter === "all" || g.stage === stageFilter);
+  const i = list.findIndex((x) => x.id === id), j = i + d;
+  if (i < 0 || j < 0 || j >= list.length) return;
+  const ids = list.map((x) => x.id); [ids[i], ids[j]] = [ids[j], ids[i]];
+  await run(api("POST", "/api/admin/lesson-groups/reorder", { ids }), "تم الترتيب");
+}
+async function moveUnit(list, i, d) {
+  const j = i + d; if (j < 0 || j >= list.length) return;
+  const ids = list.map((x) => x.id); [ids[i], ids[j]] = [ids[j], ids[i]];
+  await run(api("POST", "/api/admin/lesson-units/reorder", { lessonGroupId: list[0].lessonGroupId, ids }), "تم الترتيب");
+}
+async function reorderLessons(list, i, d) {
+  const j = i + d; if (j < 0 || j >= list.length) return;
+  const ids = list.map((x) => x.id); [ids[i], ids[j]] = [ids[j], ids[i]];
+  await run(api("POST", "/api/admin/lessons/reorder", { ids }), "تم الترتيب");
+}
+
+function askDeleteGroup(g) {
+  confirm_(`حذف المجموعة «${g.name}»؟ ستُحذف وحداتها فقط، أما الفيديوهات (${g.lessonCount}) فلن تُحذف وستنتقل إلى «دروس غير مصنفة». طلبات الاشتراك لا تتأثر.`,
+    async () => { await run(api("DELETE", `/api/admin/lesson-groups/${g.id}`), "تم حذف المجموعة"); });
+}
+
+/* ---------- مودال المجموعة ---------- */
+function setColor(c) {
+  pickedColor = c;
+  $("grpColors").querySelectorAll(".lca-swatch").forEach((s) => s.classList.toggle("is-on", s.dataset.pick === c));
+}
+function openGroupModal(g) {
+  editingGroup = g || null;
+  $("grpModalTitle").textContent = g ? "تعديل المجموعة" : "مجموعة جديدة";
+  $("grpName").value = g ? g.name : ""; $("grpDesc").value = g ? g.description : "";
+  $("grpStage").value = g ? g.stage : (stageFilter !== "all" ? stageFilter : "");
+  $("grpCover").value = g ? g.coverUrl : ""; $("grpOrder").value = g ? g.order : "";
+  $("grpActive").checked = g ? g.active : true; setColor(g ? g.color : "indigo");
+  openM("grpModal"); setTimeout(() => $("grpName").focus(), 80);
+}
+async function saveGroup() {
+  const body = {
+    name: safeText($("grpName").value), description: safeText($("grpDesc").value), stage: $("grpStage").value,
+    coverUrl: safeText($("grpCover").value), color: pickedColor, active: $("grpActive").checked
+  };
+  if ($("grpOrder").value !== "") body.order = Number($("grpOrder").value);
+  if (!body.name) return showToast("اكتب اسم المجموعة.", "error");
+  if (!body.stage) return showToast("اختر المرحلة الدراسية.", "error");
+  const p = editingGroup ? api("PATCH", `/api/admin/lesson-groups/${editingGroup.id}`, body) : api("POST", "/api/admin/lesson-groups", body);
+  if (await run(p, editingGroup ? "تم تحديث المجموعة" : "تم إنشاء المجموعة")) closeM("grpModal");
+}
+
+/* ---------- مودال الوحدة ---------- */
+function openUnitModal(u, gid) {
+  editingUnit = u || null; unitForGroup = gid;
+  $("unitModalTitle").textContent = u ? "تعديل الوحدة" : "وحدة جديدة";
+  $("unitName").value = u ? u.name : ""; $("unitDesc").value = u ? u.description : ""; $("unitActive").checked = u ? u.active : true;
+  openM("unitModal"); setTimeout(() => $("unitName").focus(), 80);
+}
+async function saveUnit() {
+  const body = { name: safeText($("unitName").value), description: safeText($("unitDesc").value), active: $("unitActive").checked };
+  if (!body.name) return showToast("اكتب اسم الوحدة.", "error");
+  if (!editingUnit) body.lessonGroupId = unitForGroup;
+  const p = editingUnit ? api("PATCH", `/api/admin/lesson-units/${editingUnit.id}`, body) : api("POST", "/api/admin/lesson-units", body);
+  if (await run(p, editingUnit ? "تم تحديث الوحدة" : "تم إنشاء الوحدة")) closeM("unitModal");
+}
+
+/* ---------- قوائم المجموعة/الوحدة التابعة للمرحلة ---------- */
+function fillGroupSelect(sel, stage, current) {
+  sel.replaceChildren();
+  const first = h("option", "", stage ? "اختر المجموعة" : "اختر المرحلة أولًا"); first.value = ""; sel.appendChild(first);
+  groups.filter((g) => !stage || g.stage === stage).forEach((g) => { const o = h("option", "", g.name + (g.active ? "" : " (مسودة)")); o.value = g.id; sel.appendChild(o); });
+  sel.value = current && [...sel.options].some((o) => o.value === current) ? current : "";
+}
+function fillUnitSelect(sel, gid, current) {
+  sel.replaceChildren();
+  const first = h("option", "", "بدون وحدة (مباشرة في المجموعة)"); first.value = ""; sel.appendChild(first);
+  if (gid) unitsOf(gid).forEach((u) => { const o = h("option", "", u.name); o.value = u.id; sel.appendChild(o); });
+  sel.value = current && [...sel.options].some((o) => o.value === current) ? current : "";
+}
+
+/* ---------- مودال الدرس ---------- */
 function updatePreview() {
-  if (!lsPreviewEl || !lsUrlInput) return;
+  const box = $("lsPreview"); box.replaceChildren();
+  const id = extractYouTubeID(safeText($("lsUrlInput").value));
+  if (!id) { box.appendChild(h("span", "", "🎬")); return; }
+  const img = document.createElement("img"); img.alt = "معاينة الفيديو"; img.referrerPolicy = "no-referrer";
+  img.style.cssText = "width:100%;height:100%;object-fit:cover;";
+  img.src = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+  img.addEventListener("error", () => { box.replaceChildren(h("span", "", "🎬")); });
+  box.appendChild(img);
+}
+function openLessonModal(l, pre = {}) {
+  editingLesson = l || null;
+  const gid = l ? (l.lessonGroupId || "") : (pre.groupId && pre.groupId !== NONE ? pre.groupId : "");
+  const grp = groups.find((g) => g.id === gid);
+  const stage = l ? l.stage : (grp ? grp.stage : (stageFilter !== "all" ? stageFilter : ""));
+  $("lsModalTitle").textContent = l ? "تعديل الدرس" : "درس جديد";
+  $("lsConfirmBtn").textContent = l ? "حفظ" : "إضافة";
+  $("lsTitleInput").value = l ? l.title : ""; $("lsDescInput").value = l ? l.description : "";
+  $("lsUrlInput").value = l ? l.url : ""; $("lsStageSelect").value = stage;
+  fillGroupSelect($("lsGroupSelect"), stage, gid);
+  fillUnitSelect($("lsUnitSelect"), $("lsGroupSelect").value, l ? l.unitId : pre.unitId);
+  $("lsOrderInput").value = l ? l.order : ""; $("lsActiveInput").checked = l ? l.active : true;
+  const legacy = l && !isVideo(l);
+  $("lsModalSub").textContent = legacy ? "درس قديم (" + KIND_LABEL[kindOf(l)] + "): أدخل رابط YouTube لتحويله إلى فيديو، أو انقله/احذفه." : "فيديو من YouTube داخل مجموعة تعليمية.";
+  if (legacy) $("lsUrlInput").value = "";
+  updatePreview(); openM("lsModal"); setTimeout(() => $("lsTitleInput").focus(), 80);
+}
+function closeLessonModal() { closeM("lsModal"); editingLesson = null; }
 
-  const url = safeText(lsUrlInput.value);
-  const videoId = extractYouTubeID(url);
-
-  lsPreviewEl.replaceChildren();
-
-  if (!videoId) {
-    previewVideoId = null;
-    const placeholder = document.createElement("span");
-    placeholder.setAttribute("aria-hidden", "true");
-    placeholder.textContent = "🎬";
-    lsPreviewEl.appendChild(placeholder);
-    return;
-  }
-
-  previewVideoId = videoId;
-
-  // Thumbnail preview (أسرع وأخف من iframe)
-  const img = document.createElement("img");
-  img.src = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
-  img.alt = "معاينة الفيديو";
-  img.style.width = "100%";
-  img.style.height = "100%";
-  img.style.objectFit = "cover";
-  img.referrerPolicy = "no-referrer";
-  img.onerror = () => {
-    lsPreviewEl.replaceChildren();
-    const placeholder = document.createElement("span");
-    placeholder.setAttribute("aria-hidden", "true");
-    placeholder.textContent = "🎬";
-    lsPreviewEl.appendChild(placeholder);
+async function saveLesson() {
+  const url = safeText($("lsUrlInput").value);
+  const body = {
+    title: safeText($("lsTitleInput").value), description: safeText($("lsDescInput").value), url, kind: "video",
+    stage: $("lsStageSelect").value, lessonGroupId: $("lsGroupSelect").value, unitId: $("lsUnitSelect").value,
+    active: $("lsActiveInput").checked
   };
-  lsPreviewEl.appendChild(img);
+  if ($("lsOrderInput").value !== "") body.order = Number($("lsOrderInput").value);
+  if (!body.title) return showToast("اكتب عنوان الدرس.", "error");
+  if (!extractYouTubeID(url)) return showToast("رابط YouTube غير صالح.", "error");
+  if (!body.stage) return showToast("اختر المرحلة الدراسية.", "error");
+  if (!body.lessonGroupId) return showToast("اختر المجموعة التعليمية.", "error");
+  const p = editingLesson ? api("PATCH", `/api/admin/lessons/${editingLesson.id}`, body) : api("POST", "/api/admin/lessons", body);
+  if (await run(p, editingLesson ? "تم حفظ الدرس" : "تمت إضافة الدرس")) closeLessonModal();
 }
 
-
-/* ============================================================
-   13 — Create/Edit Modal
-   ============================================================ */
-
-function openLessonModal(existing) {
-  if (!lsModalEl) return;
-
-  editingId = existing ? safeText(existing.id) : null;
-
-  // Reset
-  if (lsTitleInput) lsTitleInput.value = existing ? safeText(existing.title) : "";
-  if (lsKindSel)    lsKindSel.value    = existing ? (safeText(existing.kind) === "video" ? "audio" : safeText(existing.kind)) : "audio";
-  if (lsStageSel)   lsStageSel.value   = existing ? safeText(existing.stage) : "";
-  if (lsUrlInput)   lsUrlInput.value   = existing ? safeText(existing.url || existing.youtubeUrl) : "";
-
-  // Titles
-  if (lsModalTitleEl) lsModalTitleEl.textContent = existing ? "تعديل الدرس" : "درس جديد";
-  if (lsModalSubEl)   lsModalSubEl.textContent   = existing
-    ? "عدّل بيانات الدرس ثم احفظ."
-    : "سيظهر الدرس للطلاب حسب المرحلة.";
-
-  if (lsConfirmBtn) lsConfirmBtn.textContent = existing ? "حفظ" : "إضافة";
-
-  // Preview
-  updatePreview();
-
-  // فتح
-  lsModalEl.classList.add("is-open");
-  lsModalEl.setAttribute("aria-hidden", "false");
-  document.body.style.overflow = "hidden";
-
-  setTimeout(() => {
-    if (lsTitleInput) lsTitleInput.focus();
-  }, 150);
+/* ---------- نقل ---------- */
+function openMove(l) {
+  moveId = l.id;
+  $("moveModalSub").textContent = `«${l.title}» — المجموعات المتاحة من نفس المرحلة (${stageName(l.stage)}).`;
+  fillGroupSelect($("moveGroup"), l.stage, l.lessonGroupId || "");
+  fillUnitSelect($("moveUnit"), $("moveGroup").value, l.unitId);
+  openM("moveModal");
+}
+async function saveMove() {
+  const gid = $("moveGroup").value;
+  if (!gid) return showToast("اختر المجموعة.", "error");
+  if (await run(api("PATCH", `/api/admin/lessons/${moveId}`, { lessonGroupId: gid, unitId: $("moveUnit").value }), "تم نقل الدرس")) closeM("moveModal");
 }
 
-function closeLessonModal() {
-  if (!lsModalEl) return;
-  lsModalEl.classList.remove("is-open");
-  lsModalEl.setAttribute("aria-hidden", "true");
-  document.body.style.overflow = "";
-  editingId = null;
-  previewVideoId = null;
-}
-
-
-/* ============================================================
-   14 — التحقق
-   ============================================================ */
-
-function collectLessonData() {
-  const title = safeText(lsTitleInput ? lsTitleInput.value : "");
-  const kind  = safeText(lsKindSel ? lsKindSel.value : "");
-  const stage = safeText(lsStageSel ? lsStageSel.value : "");
-  const url   = safeText(lsUrlInput ? lsUrlInput.value : "");
-
-  const errors = {};
-
-  if (!title) {
-    errors.title = "من فضلك أدخل عنوان الدرس.";
-  } else if (title.length > 150) {
-    errors.title = "العنوان طويل جدًا.";
-  }
-
-  if (!kind || !["audio", "notes"].includes(kind)) {
-    errors.kind = "نوع الدرس غير صحيح.";
-  }
-
-  if (!stage) {
-    errors.stage = "من فضلك اختر المرحلة.";
-  }
-
-  if (!url) {
-    errors.url = "من فضلك أدخل الرابط.";
-  } else if (!validateHttpsURL(url)) {
-    errors.url = "الرابط لازم يبدأ بـ https://";
-  }
-
-  return {
-    valid: Object.keys(errors).length === 0,
-    errors,
-    data: {
-      title,
-      kind,
-      stage,
-      url
-    }
-  };
-}
-
-
-/* ============================================================
-   15 — حفظ (إنشاء / تعديل)
-   ============================================================ */
-
-async function handleSaveLesson() {
-  if (isSaving) return;
-
-  const { valid, errors, data } = collectLessonData();
-
-  if (!valid) {
-    const firstError = Object.values(errors)[0];
-    showToast(firstError || "تحقق من البيانات.", "warning");
-    return;
-  }
-
-  isSaving = true;
-  if (lsConfirmBtn) {
-    lsConfirmBtn.disabled = true;
-    lsConfirmBtn.textContent = editingId ? "جارٍ الحفظ..." : "جارٍ الإضافة...";
-  }
-
-  let result;
-  if (editingId) {
-    result = await workerFetch(`/api/admin/lessons/${encodeURIComponent(editingId)}`, {
-      method: "PATCH",
-      body: data
-    });
-  } else {
-    result = await workerFetch("/api/admin/lessons", {
-      method: "POST",
-      body: data
-    });
-  }
-
-  isSaving = false;
-  if (lsConfirmBtn) {
-    lsConfirmBtn.disabled = false;
-    lsConfirmBtn.textContent = editingId ? "حفظ" : "إضافة";
-  }
-
-  if (!result || !result.success) {
-    const code = (result && result.error && result.error.code) || ERRORS.SERVER_ERROR;
-    const msg  = (result && result.error && result.error.message) || ERROR_MESSAGES[code];
-
-    if (code === ERRORS.UNAUTHORIZED) {
-      showToast(ERROR_MESSAGES.UNAUTHORIZED, "warning");
-      setTimeout(() => { window.location.href = "login.html"; }, 1500);
-      return;
-    }
-
-    showToast(msg, "error");
-    return;
-  }
-
-  // تحديث محلي
-  const savedItem = (result.data && result.data.lesson) ? result.data.lesson : null;
-
-  if (savedItem && savedItem.id) {
-    if (editingId) {
-      const idx = allLessons.findIndex((l) => l && l.id === editingId);
-      if (idx >= 0) allLessons[idx] = savedItem;
-    } else {
-      allLessons.unshift(savedItem);
-    }
-  }
-
-  updateStats();
-  renderLessons();
-  closeLessonModal();
-
-  showToast(editingId ? "تم الحفظ ✅" : "تمت الإضافة ✅", "success");
-}
-
-
-/* ============================================================
-   16 — حذف درس
-   ============================================================ */
-
-async function handleDelete(id, title) {
-  const cleanId = safeText(id);
-  if (!cleanId) return;
-
-  const confirmed = window.confirm(`متأكد من حذف الدرس: "${title}"؟`);
-  if (!confirmed) return;
-
-  const result = await workerFetch(`/api/admin/lessons/${encodeURIComponent(cleanId)}`, {
-    method: "DELETE"
+/* ---------- ربط الأحداث ---------- */
+function bind() {
+  $("lsRetryBtn").addEventListener("click", load);
+  $("lsCreateBtn").addEventListener("click", () => openLessonModal(null, { groupId: openGroup }));
+  $("lsNewLessonBtn").addEventListener("click", () => openLessonModal(null));
+  $("lsNewGroupBtn").addEventListener("click", () => openGroupModal(null));
+  $("lsSearchInput").addEventListener("input", debounce((e) => { search = safeText(e.target.value); if (!openGroup) renderHome(); }, 250));
+  $("lsStageFilters").addEventListener("click", (e) => {
+    const b = e.target.closest(".ls-filter"); if (!b) return;
+    stageFilter = b.dataset.stage;
+    $("lsStageFilters").querySelectorAll(".ls-filter").forEach((x) => x.classList.toggle("is-active", x === b));
+    if (!openGroup) renderHome();
   });
-
-  if (!result || !result.success) {
-    const code = (result && result.error && result.error.code) || ERRORS.SERVER_ERROR;
-    const msg  = (result && result.error && result.error.message) || ERROR_MESSAGES[code];
-
-    if (code === ERRORS.UNAUTHORIZED) {
-      showToast(ERROR_MESSAGES.UNAUTHORIZED, "warning");
-      setTimeout(() => { window.location.href = "login.html"; }, 1500);
-      return;
-    }
-
-    showToast(msg, "error");
-    return;
-  }
-
-  allLessons = allLessons.filter((l) => l && l.id !== cleanId);
-  updateStats();
-  renderLessons();
-
-  showToast("تم الحذف", "success");
-}
-
-
-/* ============================================================
-   17 — Stats Row Clickable
-   ============================================================ */
-
-function bindStatsClick() {
-  if (!statsRowEl) return;
-
-  statsRowEl.querySelectorAll(".ls-stat").forEach((stat) => {
-    stat.addEventListener("click", () => {
-      const kind = safeText(stat.dataset.kind) || "all";
-      if (kind === currentKind) return;
-
-      currentKind = kind;
-
-      statsRowEl.querySelectorAll(".ls-stat").forEach((s) => {
-        s.classList.toggle("is-active", s.dataset.kind === kind);
-      });
-
-      renderLessons();
-    });
-  });
-}
-
-
-/* ============================================================
-   18 — Stage Filters
-   ============================================================ */
-
-function bindStageFilters() {
-  if (!stageFiltersEl) return;
-
-  stageFiltersEl.querySelectorAll(".ls-filter").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const stage = safeText(btn.dataset.stage) || "all";
-      if (stage === currentStage) return;
-
-      currentStage = stage;
-
-      stageFiltersEl.querySelectorAll(".ls-filter").forEach((b) => {
-        b.classList.toggle("is-active", b.dataset.stage === stage);
-      });
-
-      renderLessons();
-    });
-  });
-}
-
-
-/* ============================================================
-   19 — ربط الأحداث
-   ============================================================ */
-
-function bindEvents() {
-  if (createBtn) createBtn.addEventListener("click", () => openLessonModal(null));
-  if (retryBtn)  retryBtn.addEventListener("click", () => loadLessons());
-
-  // Search (بـ debounce)
-  if (searchInput) {
-    const debounced = debounce((value) => {
-      currentSearch = value || "";
-      renderLessons();
-    }, 300);
-
-    searchInput.addEventListener("input", (e) => {
-      debounced(e.target.value);
-    });
-  }
-
-  // Modal actions
-  if (lsCancelBtn)  lsCancelBtn.addEventListener("click", closeLessonModal);
-  if (lsConfirmBtn) lsConfirmBtn.addEventListener("click", handleSaveLesson);
-
-  if (lsModalEl) {
-    lsModalEl.addEventListener("click", (e) => {
-      if (e.target === lsModalEl) closeLessonModal();
-    });
-  }
-
-  // Preview live update
-  if (lsUrlInput) {
-    lsUrlInput.addEventListener("input", debounce(updatePreview, 300));
-  }
-
-  // Escape
+  document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => closeM(b.dataset.close)));
+  $("grpColors").addEventListener("click", (e) => { const s = e.target.closest("[data-pick]"); if (s) setColor(s.dataset.pick); });
+  $("grpSave").addEventListener("click", saveGroup);
+  $("unitSave").addEventListener("click", saveUnit);
+  $("lsConfirmBtn").addEventListener("click", saveLesson);
+  $("lsCancelBtn").addEventListener("click", closeLessonModal);
+  $("lsUrlInput").addEventListener("input", debounce(updatePreview, 250));
+  /* عند اختيار مجموعة: اعرض وحداتها فقط ولا تحتفظ بوحدة مجموعة أخرى */
+  $("lsStageSelect").addEventListener("change", () => { fillGroupSelect($("lsGroupSelect"), $("lsStageSelect").value, ""); fillUnitSelect($("lsUnitSelect"), "", ""); });
+  $("lsGroupSelect").addEventListener("change", () => fillUnitSelect($("lsUnitSelect"), $("lsGroupSelect").value, ""));
+  $("moveGroup").addEventListener("change", () => fillUnitSelect($("moveUnit"), $("moveGroup").value, ""));
+  $("moveSave").addEventListener("click", saveMove);
+  $("confirmOk").addEventListener("click", async () => { const f = confirmFn; closeM("confirmModal"); if (f) await f(); });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && lsModalEl && lsModalEl.classList.contains("is-open")) {
-      closeLessonModal();
-    }
+    if (e.key === "Escape") document.querySelectorAll(".adm-modal-overlay.is-open").forEach((m) => closeM(m.id));
   });
-
-  // Bind filters
-  bindStatsClick();
-  bindStageFilters();
 }
-
-
-/* ============================================================
-   20 — التهيئة
-   ============================================================ */
 
 async function init() {
-  const session = requireAdmin();
-  if (!session) return;
-
-  cacheElements();
-  bindEvents();
-
-  await loadLessons();
+  if (!requireAdmin()) return;
+  bind();
+  await load();
 }
-
-
-/* ============================================================
-   21 — التشغيل
-   ============================================================ */
-
 onReady(init);
