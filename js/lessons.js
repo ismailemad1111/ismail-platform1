@@ -263,14 +263,26 @@ async function load() {
   try { barai.notify("lessons.open"); barai.settle(); } catch (e) { /* تجاهل */ }
 }
 
+/** يطوي الدروس المتطابقة (نفس العنوان والرابط) التي تنتج عن ضغطة إضافة مكررة */
+function dedupe(list) {
+  const seen = new Set();
+  return list.filter((l) => {
+    const k = safeText(l.title).trim() + "|" + safeText(l.url || l.youtubeUrl).trim();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+const doneOf = (list) => list.filter((l) => l.done).length;
+
 function normGroup(g) {
-  const units = Array.isArray(g.units) ? g.units : [];
-  return {
-    ...g,
-    units: units.map((u) => ({ ...u, lessons: Array.isArray(u.lessons) ? u.lessons : [], lessonCount: num(u.lessonCount), doneCount: num(u.doneCount) })),
-    lessons: Array.isArray(g.lessons) ? g.lessons : [],
-    unitCount: num(g.unitCount), lessonCount: num(g.lessonCount), doneCount: num(g.doneCount)
-  };
+  const units = (Array.isArray(g.units) ? g.units : []).map((u) => {
+    const lessons = dedupe(Array.isArray(u.lessons) ? u.lessons : []);
+    return { ...u, lessons, lessonCount: lessons.length, doneCount: doneOf(lessons) };
+  });
+  const lessons = dedupe(Array.isArray(g.lessons) ? g.lessons : []);
+  const all = lessons.concat(...units.map((u) => u.lessons));
+  return { ...g, units, lessons, unitCount: units.length, lessonCount: all.length, doneCount: doneOf(all) };
 }
 
 /* ---------- المشغل ---------- */
