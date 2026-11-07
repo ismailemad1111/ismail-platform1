@@ -23,6 +23,7 @@
  *
  * Endpoints المستهدفة (مبدئية — تُثبَّت أثناء بناء Worker):
  *   GET  /api/lessons
+ *   GET  /api/lesson-catalog
  *   GET  /api/announcements
  *   POST /api/announcements/reply
  *   GET  /api/exams
@@ -136,15 +137,16 @@ async function workerRequest(endpoint, options = {}) {
 /**
  * جلب دروس الطالب.
  * @param {Object} options
- * @param {"video"|"audio"|null} options.kind - نوع الدرس
+ * (فيديو فقط — لم يعد هناك نوع صوت/ملازم)
  * @returns {Promise<Object>}
  */
-export async function getLessons({ kind = null } = {}) {
-  const query = {};
-  if (kind === "video" || kind === "audio" || kind === "notes") {
-    query.kind = kind;
-  }
-  return workerRequest("/api/lessons", { query });
+export async function getLessons() {
+  return workerRequest("/api/lessons");
+}
+
+/** كتالوج الدروس المنظم: مجموعات ← وحدات ← دروس + تقدّم الطالب. */
+export async function getLessonCatalog() {
+  return workerRequest("/api/lesson-catalog");
 }
 
 /** تسجيل فتح الدرس لدى Worker. */
