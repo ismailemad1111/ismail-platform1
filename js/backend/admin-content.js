@@ -89,15 +89,15 @@ const toOrder = (v, dflt = 0) => {
 };
 
 /** يتحقق من علاقة (المجموعة/الوحدة/المرحلة) ويعيد { group, unit } */
-async function resolveLessonPlacement({ stage, lessonGroupId, unitId }) {
-  const group = await getDocData("lessonGroups", lessonGroupId);
+async function resolveLessonPlacement({ stage, collectionId, unitId }) {
+  const group = await getDocData("lessonCollections", collectionId);
   if (!group) bad("NOT_FOUND", "المجموعة التعليمية غير موجودة.");
   if (safeText(group.stage) !== stage) bad("BAD_REQUEST", "المجموعة لا تتبع المرحلة المحددة.");
   let unit = null;
   if (unitId) {
     unit = await getDocData("lessonUnits", unitId);
     if (!unit) bad("NOT_FOUND", "الوحدة غير موجودة.");
-    if (safeText(unit.lessonGroupId) !== lessonGroupId) bad("BAD_REQUEST", "الوحدة لا تتبع المجموعة نفسها.");
+    if (safeText(unit.collectionId) !== collectionId) bad("BAD_REQUEST", "الوحدة لا تتبع المجموعة نفسها.");
   }
   return { group, unit };
 }
@@ -110,7 +110,7 @@ const lessonOut = (d) => ({
   url: safeText(d.url) || safeText(d.youtubeUrl),
   youtubeUrl: safeText(d.url) || safeText(d.youtubeUrl),
   stage: safeText(d.stage),
-  lessonGroupId: safeText(d.lessonGroupId) || null,
+  collectionId: safeText(d.collectionId) || null,
   unitId: safeText(d.unitId) || null,
   order: Number.isFinite(Number(d.order)) ? Number(d.order) : 0,
   active: d.active !== false,
@@ -132,7 +132,7 @@ route("POST", "/api/admin/lessons", async ({ body }) => {
   const url = safeText(body.url) || safeText(body.youtubeUrl);
   const stage = safeText(body.stage);
   const description = safeText(body.description);
-  const lessonGroupId = safeText(body.lessonGroupId);
+  const collectionId = safeText(body.collectionId);
   const unitId = safeText(body.unitId);
   const active = body.active !== false;
 
@@ -141,19 +141,19 @@ route("POST", "/api/admin/lessons", async ({ body }) => {
   if (!NEW_LESSON_KINDS.includes(kind)) bad("BAD_REQUEST", "الدروس الجديدة فيديو فقط.");
   if (!isYouTubeUrl(url)) bad("BAD_REQUEST", "رابط YouTube غير صالح.");
   if (!isValidStage(stage)) bad("BAD_REQUEST", "المرحلة غير صحيحة.");
-  if (!lessonGroupId) bad("BAD_REQUEST", "اختر المجموعة التعليمية.");
-  await resolveLessonPlacement({ stage, lessonGroupId, unitId });
+  if (!collectionId) bad("BAD_REQUEST", "اختر المجموعة التعليمية.");
+  await resolveLessonPlacement({ stage, collectionId, unitId });
 
   let order = body.order === undefined || body.order === "" ? null : toOrder(body.order);
   if (order === null) {
-    const sibs = (await queryDocs("lessons", fs.where("lessonGroupId", "==", lessonGroupId)))
+    const sibs = (await queryDocs("lessons", fs.where("collectionId", "==", collectionId)))
       .filter((l) => (safeText(l.unitId) || "") === unitId);
     order = sibs.reduce((m, l) => Math.max(m, Number(l.order) || 0), 0) + 1;
   }
 
   const doc = {
     title, description, kind: "video", url, youtubeUrl: url, stage,
-    lessonGroupId, unitId: unitId || null, order, active,
+    collectionId, unitId: unitId || null, order, active,
     createdAt: fs.serverTimestamp()
   };
   const created = await fs.addDoc(col("lessons"), doc);
@@ -201,19 +201,19 @@ route("PATCH", "/api/admin/lessons/:id", async ({ params, body }) => {
   /* العلاقات: تُفحص دائمًا على القيم النهائية */
   const stage = typeof body.stage === "string" ? body.stage : safeText(old.stage);
   if (!isValidStage(stage)) bad("BAD_REQUEST", "المرحلة غير صحيحة.");
-  const groupChanged = typeof body.lessonGroupId === "string" && safeText(body.lessonGroupId) !== (safeText(old.lessonGroupId) || "");
-  let groupId = typeof body.lessonGroupId === "string" ? safeText(body.lessonGroupId) : (safeText(old.lessonGroupId) || "");
+  const groupChanged = typeof body.collectionId === "string" && safeText(body.collectionId) !== (safeText(old.collectionId) || "");
+  let groupId = typeof body.collectionId === "string" ? safeText(body.collectionId) : (safeText(old.collectionId) || "");
   let unitId = body.unitId !== undefined ? safeText(body.unitId) : (groupChanged ? "" : (safeText(old.unitId) || ""));
   if (groupChanged && body.unitId === undefined) unitId = ""; /* لا نحتفظ بوحدة من مجموعة مختلفة */
-  const touchesPlacement = groupChanged || body.unitId !== undefined || stage !== safeText(old.stage) || (typeof body.lessonGroupId === "string");
+  const touchesPlacement = groupChanged || body.unitId !== undefined || stage !== safeText(old.stage) || (typeof body.collectionId === "string");
   if (touchesPlacement) {
     if (!groupId) bad("BAD_REQUEST", "اختر المجموعة التعليمية.");
-    await resolveLessonPlacement({ stage, lessonGroupId: groupId, unitId });
+    await resolveLessonPlacement({ stage, collectionId: groupId, unitId });
     update.stage = stage;
-    update.lessonGroupId = groupId;
+    update.collectionId = groupId;
     update.unitId = unitId || null;
     if (groupChanged && body.order === undefined) {
-      const sibs = (await queryDocs("lessons", fs.where("lessonGroupId", "==", groupId)))
+      const sibs = (await queryDocs("lessons", fs.where("collectionId", "==", groupId)))
         .filter((l) => (safeText(l.unitId) || "") === unitId);
       update.order = sibs.reduce((m, l) => Math.max(m, Number(l.order) || 0), 0) + 1;
     }
@@ -745,9 +745,67 @@ route("POST", "/api/admin/ai-settings/test", async ({ body }) => {
   }
 });
 
-/* ---------------- مجموعات الدروس + الوحدات ---------------- */
+/* ---------------- مجموعات الدروس ---------------- */
 
-const groupOut = (d) => ({
+route("GET", "/api/admin/lesson-groups", async () => {
+  requireAdmin();
+  const rows = await listAll("lessonGroups");
+  const groups = rows.map((d) => ({
+    id: d.id,
+    name: safeText(d.name),
+    stage: safeText(d.stage),
+    active: d.active !== false,
+    createdAt: d.createdAt || null
+  }));
+  groups.sort((a, b) => tsToMs(b.createdAt) - tsToMs(a.createdAt));
+  return ok(toPlain({ groups }));
+});
+
+route("POST", "/api/admin/lesson-groups", async ({ body }) => {
+  requireAdmin();
+  const name = safeText(body.name);
+  const stage = safeText(body.stage);
+  const active = body.active !== false;
+
+  if (!name || name.length > 80) bad("BAD_REQUEST", "اسم المجموعة غير صالح.");
+  if (!isValidStage(stage)) bad("BAD_REQUEST", "المرحلة غير صحيحة.");
+
+  const created = await fs.addDoc(col("lessonGroups"), {
+    name, stage, active, createdAt: fs.serverTimestamp()
+  });
+  return ok({
+    group: { id: created.id, name, stage, active, createdAt: new Date().toISOString() }
+  });
+});
+
+route("PATCH", "/api/admin/lesson-groups/:id", async ({ params, body }) => {
+  requireAdmin();
+  const id = safeText(params.id);
+  if (!id) bad("BAD_REQUEST", "المعرّف مطلوب.");
+  if (!(await getDocData("lessonGroups", id))) bad("NOT_FOUND", "المجموعة غير موجودة.");
+
+  const update = {};
+  if (typeof body.name === "string") update.name = safeText(body.name);
+  if (typeof body.stage === "string" && isValidStage(body.stage)) update.stage = body.stage;
+  if (typeof body.active === "boolean") update.active = body.active;
+  update.updatedAt = fs.serverTimestamp();
+
+  await fs.updateDoc(ref("lessonGroups", id), update);
+  return ok({ updated: true });
+});
+
+route("DELETE", "/api/admin/lesson-groups/:id", async ({ params }) => {
+  requireAdmin();
+  const id = safeText(params.id);
+  if (!id) bad("BAD_REQUEST", "المعرّف مطلوب.");
+  if (!(await getDocData("lessonGroups", id))) bad("NOT_FOUND", "المجموعة غير موجودة.");
+  await fs.deleteDoc(ref("lessonGroups", id));
+  return ok({ deleted: true });
+});
+
+/* ---------------- المناهج (Learning Collections) + الوحدات ---------------- */
+
+const collOut = (d) => ({
   id: d.id,
   name: safeText(d.name),
   description: safeText(d.description),
@@ -761,7 +819,7 @@ const groupOut = (d) => ({
 
 const unitOut = (d) => ({
   id: d.id,
-  lessonGroupId: safeText(d.lessonGroupId),
+  collectionId: safeText(d.collectionId),
   stage: safeText(d.stage),
   name: safeText(d.name),
   description: safeText(d.description),
@@ -778,20 +836,20 @@ function cleanCover(v) {
   return s;
 }
 
-route("GET", "/api/admin/lesson-groups", async () => {
+route("GET", "/api/admin/lesson-collections", async () => {
   requireAdmin();
-  const [rows, units, lessons] = await Promise.all([listAll("lessonGroups"), listAll("lessonUnits"), listAll("lessons")]);
+  const [rows, units, lessons] = await Promise.all([listAll("lessonCollections"), listAll("lessonUnits"), listAll("lessons")]);
   const groups = rows.map((d) => {
-    const g = groupOut(d);
-    g.unitCount = units.filter((u) => safeText(u.lessonGroupId) === d.id).length;
-    g.lessonCount = lessons.filter((l) => safeText(l.lessonGroupId) === d.id).length;
+    const g = collOut(d);
+    g.unitCount = units.filter((u) => safeText(u.collectionId) === d.id).length;
+    g.lessonCount = lessons.filter((l) => safeText(l.collectionId) === d.id).length;
     return g;
   });
   groups.sort((a, b) => (a.order - b.order) || (tsToMs(b.createdAt) - tsToMs(a.createdAt)));
   return ok(toPlain({ groups }));
 });
 
-route("POST", "/api/admin/lesson-groups", async ({ body }) => {
+route("POST", "/api/admin/lesson-collections", async ({ body }) => {
   requireAdmin();
   const name = safeText(body.name);
   const stage = safeText(body.stage);
@@ -807,32 +865,32 @@ route("POST", "/api/admin/lesson-groups", async ({ body }) => {
   let order;
   if (body.order !== undefined && body.order !== "") order = toOrder(body.order);
   else {
-    const same = await queryDocs("lessonGroups", fs.where("stage", "==", stage));
+    const same = await queryDocs("lessonCollections", fs.where("stage", "==", stage));
     order = same.reduce((m, g) => Math.max(m, Number(g.order) || 0), 0) + 1;
   }
 
   const doc = { name, description, stage, coverUrl, color, order, active, createdAt: fs.serverTimestamp() };
-  const created = await fs.addDoc(col("lessonGroups"), doc);
-  return ok({ group: groupOut({ ...doc, id: created.id, createdAt: new Date().toISOString() }) });
+  const created = await fs.addDoc(col("lessonCollections"), doc);
+  return ok({ group: collOut({ ...doc, id: created.id, createdAt: new Date().toISOString() }) });
 });
 
-route("POST", "/api/admin/lesson-groups/reorder", async ({ body }) => {
+route("POST", "/api/admin/lesson-collections/reorder", async ({ body }) => {
   requireAdmin();
   const ids = Array.isArray(body.ids) ? body.ids.map(safeText).filter(Boolean) : [];
   if (!ids.length || ids.length > 200 || new Set(ids).size !== ids.length) bad("BAD_REQUEST", "قائمة الترتيب غير صالحة.");
-  const found = await getDocsByIds("lessonGroups", ids);
+  const found = await getDocsByIds("lessonCollections", ids);
   if (ids.some((i) => !found[i])) bad("NOT_FOUND", "بعض المجموعات غير موجودة.");
   const batch = fs.writeBatch(db);
-  ids.forEach((i, n) => batch.update(ref("lessonGroups", i), { order: n + 1, updatedAt: fs.serverTimestamp() }));
+  ids.forEach((i, n) => batch.update(ref("lessonCollections", i), { order: n + 1, updatedAt: fs.serverTimestamp() }));
   await batch.commit();
   return ok({ reordered: ids.length });
 });
 
-route("PATCH", "/api/admin/lesson-groups/:id", async ({ params, body }) => {
+route("PATCH", "/api/admin/lesson-collections/:id", async ({ params, body }) => {
   requireAdmin();
   const id = safeText(params.id);
   if (!id) bad("BAD_REQUEST", "المعرّف مطلوب.");
-  const old = await getDocData("lessonGroups", id);
+  const old = await getDocData("lessonCollections", id);
   if (!old) bad("NOT_FOUND", "المجموعة غير موجودة.");
 
   const update = {};
@@ -855,8 +913,8 @@ route("PATCH", "/api/admin/lesson-groups/:id", async ({ params, body }) => {
   if (typeof body.stage === "string" && isValidStage(body.stage) && body.stage !== safeText(old.stage)) {
     update.stage = body.stage;
     const [lessons, units] = await Promise.all([
-      queryDocs("lessons", fs.where("lessonGroupId", "==", id)),
-      queryDocs("lessonUnits", fs.where("lessonGroupId", "==", id))
+      queryDocs("lessons", fs.where("collectionId", "==", id)),
+      queryDocs("lessonUnits", fs.where("collectionId", "==", id))
     ]);
     const writes = [...lessons.map((l) => ref("lessons", l.id)), ...units.map((u) => ref("lessonUnits", u.id))];
     for (let i = 0; i < writes.length; i += 400) {
@@ -867,30 +925,30 @@ route("PATCH", "/api/admin/lesson-groups/:id", async ({ params, body }) => {
   }
   update.updatedAt = fs.serverTimestamp();
 
-  await fs.updateDoc(ref("lessonGroups", id), update);
+  await fs.updateDoc(ref("lessonCollections", id), update);
   return ok({ updated: true });
 });
 
 /* حذف المجموعة: تُحذف وحداتها (تنظيم فقط)، أما الدروس فلا تُحذف أبدًا:
    تُفصل عن المجموعة وتصير "غير مصنفة" (تظهر للطالب ضمن "دروس عامة" إن كانت منشورة).
    طلبات الاشتراك تحتفظ باسم المجموعة (lessonGroupName) فلا تتأثر. */
-route("DELETE", "/api/admin/lesson-groups/:id", async ({ params }) => {
+route("DELETE", "/api/admin/lesson-collections/:id", async ({ params }) => {
   requireAdmin();
   const id = safeText(params.id);
   if (!id) bad("BAD_REQUEST", "المعرّف مطلوب.");
-  if (!(await getDocData("lessonGroups", id))) bad("NOT_FOUND", "المجموعة غير موجودة.");
+  if (!(await getDocData("lessonCollections", id))) bad("NOT_FOUND", "المجموعة غير موجودة.");
 
   const [lessons, units] = await Promise.all([
-    queryDocs("lessons", fs.where("lessonGroupId", "==", id)),
-    queryDocs("lessonUnits", fs.where("lessonGroupId", "==", id))
+    queryDocs("lessons", fs.where("collectionId", "==", id)),
+    queryDocs("lessonUnits", fs.where("collectionId", "==", id))
   ]);
   for (let i = 0; i < lessons.length; i += 400) {
     const batch = fs.writeBatch(db);
-    lessons.slice(i, i + 400).forEach((l) => batch.update(ref("lessons", l.id), { lessonGroupId: null, unitId: null, updatedAt: fs.serverTimestamp() }));
+    lessons.slice(i, i + 400).forEach((l) => batch.update(ref("lessons", l.id), { collectionId: null, unitId: null, updatedAt: fs.serverTimestamp() }));
     await batch.commit();
   }
   await deleteMany("lessonUnits", units.map((u) => u.id));
-  await fs.deleteDoc(ref("lessonGroups", id));
+  await fs.deleteDoc(ref("lessonCollections", id));
   return ok({ deleted: true, detachedLessons: lessons.length, deletedUnits: units.length });
 });
 
@@ -898,8 +956,8 @@ route("DELETE", "/api/admin/lesson-groups/:id", async ({ params }) => {
 
 route("GET", "/api/admin/lesson-units", async ({ query }) => {
   requireAdmin();
-  const gid = safeText(query.lessonGroupId);
-  const rows = gid ? await queryDocs("lessonUnits", fs.where("lessonGroupId", "==", gid)) : await listAll("lessonUnits");
+  const gid = safeText(query.collectionId);
+  const rows = gid ? await queryDocs("lessonUnits", fs.where("collectionId", "==", gid)) : await listAll("lessonUnits");
   const units = rows.map(unitOut);
   units.sort((a, b) => (a.order - b.order) || (tsToMs(a.createdAt) - tsToMs(b.createdAt)));
   return ok(toPlain({ units }));
@@ -907,22 +965,22 @@ route("GET", "/api/admin/lesson-units", async ({ query }) => {
 
 route("POST", "/api/admin/lesson-units", async ({ body }) => {
   requireAdmin();
-  const lessonGroupId = safeText(body.lessonGroupId);
+  const collectionId = safeText(body.collectionId);
   const name = safeText(body.name);
   const description = safeText(body.description);
   if (!name || name.length > 80) bad("BAD_REQUEST", "اسم الوحدة غير صالح.");
   if (description.length > 600) bad("BAD_REQUEST", "الوصف طويل جدًا.");
-  const group = lessonGroupId ? await getDocData("lessonGroups", lessonGroupId) : null;
+  const group = collectionId ? await getDocData("lessonCollections", collectionId) : null;
   if (!group) bad("NOT_FOUND", "المجموعة غير موجودة.");
 
   let order;
   if (body.order !== undefined && body.order !== "") order = toOrder(body.order);
   else {
-    const sibs = await queryDocs("lessonUnits", fs.where("lessonGroupId", "==", lessonGroupId));
+    const sibs = await queryDocs("lessonUnits", fs.where("collectionId", "==", collectionId));
     order = sibs.reduce((m, u) => Math.max(m, Number(u.order) || 0), 0) + 1;
   }
   const doc = {
-    lessonGroupId, stage: safeText(group.stage), name, description, order,
+    collectionId, stage: safeText(group.stage), name, description, order,
     active: body.active !== false, createdAt: fs.serverTimestamp()
   };
   const created = await fs.addDoc(col("lessonUnits"), doc);
@@ -931,12 +989,12 @@ route("POST", "/api/admin/lesson-units", async ({ body }) => {
 
 route("POST", "/api/admin/lesson-units/reorder", async ({ body }) => {
   requireAdmin();
-  const lessonGroupId = safeText(body.lessonGroupId);
+  const collectionId = safeText(body.collectionId);
   const ids = Array.isArray(body.ids) ? body.ids.map(safeText).filter(Boolean) : [];
   if (!ids.length || ids.length > 200 || new Set(ids).size !== ids.length) bad("BAD_REQUEST", "قائمة الترتيب غير صالحة.");
   const found = await getDocsByIds("lessonUnits", ids);
   if (ids.some((i) => !found[i])) bad("NOT_FOUND", "بعض الوحدات غير موجودة.");
-  if (lessonGroupId && ids.some((i) => safeText(found[i].lessonGroupId) !== lessonGroupId)) bad("BAD_REQUEST", "الوحدات لا تتبع المجموعة نفسها.");
+  if (collectionId && ids.some((i) => safeText(found[i].collectionId) !== collectionId)) bad("BAD_REQUEST", "الوحدات لا تتبع المجموعة نفسها.");
   const batch = fs.writeBatch(db);
   ids.forEach((i, n) => batch.update(ref("lessonUnits", i), { order: n + 1, updatedAt: fs.serverTimestamp() }));
   await batch.commit();
