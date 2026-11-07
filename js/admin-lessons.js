@@ -185,7 +185,7 @@ function lessonRow(l, siblings) {
     btn(l.active ? "إخفاء" : "نشر", "", () => togglePublish("lessons", l)),
     btn("↑", "", () => reorderLessons(siblings, i, -1)),
     btn("↓", "", () => reorderLessons(siblings, i, 1)),
-    btn("حذف", "is-danger", () => confirm_(`حذف الدرس «${l.title}» نهائيًا؟`, async () => { await run(api("DELETE", `/api/admin/lessons/${l.id}`), "تم حذف الدرس"); }))
+    btn("حذف", "is-danger", () => confirm_(`حذف الدرس «${l.title}» نهائيًا؟`, async () => { await run(() => api("DELETE", `/api/admin/lessons/${l.id}`), "تم حذف الدرس"); }))
   );
   row.append(th, info, act);
   return row;
@@ -236,7 +236,7 @@ function renderGroupView() {
       btn("تعديل", "", () => openUnitModal(u, g.id)),
       btn(u.active ? "إخفاء" : "نشر", "", () => togglePublish("units", u)),
       btn("↑", "", () => moveUnit(us, i, -1)), btn("↓", "", () => moveUnit(us, i, 1)),
-      btn("حذف", "is-danger", () => confirm_(`حذف الوحدة «${u.name}»؟ دروسها لن تُحذف، وستنتقل إلى المجموعة مباشرة.`, async () => { await run(api("DELETE", `/api/admin/lesson-units/${u.id}`), "تم حذف الوحدة"); }))
+      btn("حذف", "is-danger", () => confirm_(`حذف الوحدة «${u.name}»؟ دروسها لن تُحذف، وستنتقل إلى المجموعة مباشرة.`, async () => { await run(() => api("DELETE", `/api/admin/lesson-units/${u.id}`), "تم حذف الوحدة"); }))
     );
     head.append(t, act); box.appendChild(head);
     box.appendChild(lessonsBlock(lessonsOf(g.id, u.id)));
@@ -256,23 +256,28 @@ function renderGroupView() {
 }
 
 /* ---------- عمليات مشتركة ---------- */
-async function run(promise, okMsg) {
-  if (busy) return false;
+async function run(task, okMsg, trigger) {
+  if (busy) return false;           // القفل قبل إرسال أي طلب: يمنع تكرار الإضافة بالضغط المزدوج
   busy = true;
+  const label = trigger ? trigger.textContent : "";
+  if (trigger) { trigger.disabled = true; trigger.textContent = "جارٍ الحفظ…"; }
   try {
-    const r = await promise;
+    const r = await task();
     if (!r || !r.success) { showToast((r && r.error && r.error.message) || "تعذر تنفيذ العملية.", "error"); return false; }
     if (okMsg) showToast(okMsg, "success");
     await load();
     return true;
-  } finally { busy = false; }
+  } finally {
+    busy = false;
+    if (trigger) { trigger.disabled = false; trigger.textContent = label; }
+  }
 }
 
 function confirm_(text, fn) { $("confirmText").textContent = text; confirmFn = fn; openM("confirmModal"); }
 
 async function togglePublish(kind, item) {
-  const path = kind === "groups" ? "lesson-groups" : kind === "units" ? "lesson-units" : "lessons";
-  await run(api("PATCH", `/api/admin/${path}/${item.id}`, { active: !item.active }), item.active ? "تم الإخفاء" : "تم النشر");
+  const path = kind === "groups" ? "lesson-collections" : kind === "units" ? "lesson-units" : "lessons";
+  await run(() => api("PATCH", `/api/admin/${path}/${item.id}`, { active: !item.active }), item.active ? "تم الإخفاء" : "تم النشر");
 }
 
 async function moveItem(kind, id, d) {
@@ -280,22 +285,22 @@ async function moveItem(kind, id, d) {
   const i = list.findIndex((x) => x.id === id), j = i + d;
   if (i < 0 || j < 0 || j >= list.length) return;
   const ids = list.map((x) => x.id); [ids[i], ids[j]] = [ids[j], ids[i]];
-  await run(api("POST", "/api/admin/lesson-collections/reorder", { ids }), "تم الترتيب");
+  await run(() => api("POST", "/api/admin/lesson-collections/reorder", { ids }), "تم الترتيب");
 }
 async function moveUnit(list, i, d) {
   const j = i + d; if (j < 0 || j >= list.length) return;
   const ids = list.map((x) => x.id); [ids[i], ids[j]] = [ids[j], ids[i]];
-  await run(api("POST", "/api/admin/lesson-units/reorder", { collectionId: list[0].collectionId, ids }), "تم الترتيب");
+  await run(() => api("POST", "/api/admin/lesson-units/reorder", { collectionId: list[0].collectionId, ids }), "تم الترتيب");
 }
 async function reorderLessons(list, i, d) {
   const j = i + d; if (j < 0 || j >= list.length) return;
   const ids = list.map((x) => x.id); [ids[i], ids[j]] = [ids[j], ids[i]];
-  await run(api("POST", "/api/admin/lessons/reorder", { ids }), "تم الترتيب");
+  await run(() => api("POST", "/api/admin/lessons/reorder", { ids }), "تم الترتيب");
 }
 
 function askDeleteGroup(g) {
   confirm_(`حذف المجموعة «${g.name}»؟ ستُحذف وحداتها فقط، أما الفيديوهات (${g.lessonCount}) فلن تُحذف وستنتقل إلى «دروس غير مصنفة». طلبات الاشتراك لا تتأثر.`,
-    async () => { await run(api("DELETE", `/api/admin/lesson-collections/${g.id}`), "تم حذف المجموعة"); });
+    async () => { await run(() => api("DELETE", `/api/admin/lesson-collections/${g.id}`), "تم حذف المجموعة"); });
 }
 
 /* ---------- مودال المجموعة ---------- */
@@ -320,8 +325,8 @@ async function saveGroup() {
   if ($("grpOrder").value !== "") body.order = Number($("grpOrder").value);
   if (!body.name) return showToast("اكتب اسم المجموعة.", "error");
   if (!body.stage) return showToast("اختر المرحلة الدراسية.", "error");
-  const p = editingGroup ? api("PATCH", `/api/admin/lesson-collections/${editingGroup.id}`, body) : api("POST", "/api/admin/lesson-collections", body);
-  if (await run(p, editingGroup ? "تم تحديث المجموعة" : "تم إنشاء المجموعة")) closeM("grpModal");
+  const p = () => editingGroup ? api("PATCH", `/api/admin/lesson-collections/${editingGroup.id}`, body) : api("POST", "/api/admin/lesson-collections", body);
+  if (await run(p, editingGroup ? "تم تحديث المجموعة" : "تم إنشاء المجموعة", $("grpSave"))) closeM("grpModal");
 }
 
 /* ---------- مودال الوحدة ---------- */
@@ -335,8 +340,8 @@ async function saveUnit() {
   const body = { name: safeText($("unitName").value), description: safeText($("unitDesc").value), active: $("unitActive").checked };
   if (!body.name) return showToast("اكتب اسم الوحدة.", "error");
   if (!editingUnit) body.collectionId = unitForGroup;
-  const p = editingUnit ? api("PATCH", `/api/admin/lesson-units/${editingUnit.id}`, body) : api("POST", "/api/admin/lesson-units", body);
-  if (await run(p, editingUnit ? "تم تحديث الوحدة" : "تم إنشاء الوحدة")) closeM("unitModal");
+  const p = () => editingUnit ? api("PATCH", `/api/admin/lesson-units/${editingUnit.id}`, body) : api("POST", "/api/admin/lesson-units", body);
+  if (await run(p, editingUnit ? "تم تحديث الوحدة" : "تم إنشاء الوحدة", $("unitSave"))) closeM("unitModal");
 }
 
 /* ---------- قوائم المجموعة/الوحدة التابعة للمرحلة ---------- */
@@ -395,8 +400,9 @@ async function saveLesson() {
   if (!extractYouTubeID(url)) return showToast("رابط YouTube غير صالح.", "error");
   if (!body.stage) return showToast("اختر المرحلة الدراسية.", "error");
   if (!body.collectionId) return showToast("اختر المجموعة التعليمية.", "error");
-  const p = editingLesson ? api("PATCH", `/api/admin/lessons/${editingLesson.id}`, body) : api("POST", "/api/admin/lessons", body);
-  if (await run(p, editingLesson ? "تم حفظ الدرس" : "تمت إضافة الدرس")) closeLessonModal();
+  const editing = editingLesson;
+  const p = () => editing ? api("PATCH", `/api/admin/lessons/${editing.id}`, body) : api("POST", "/api/admin/lessons", body);
+  if (await run(p, editing ? "تم حفظ الدرس" : "تمت إضافة الدرس", $("lsConfirmBtn"))) closeLessonModal();
 }
 
 /* ---------- نقل ---------- */
@@ -410,7 +416,7 @@ function openMove(l) {
 async function saveMove() {
   const gid = $("moveGroup").value;
   if (!gid) return showToast("اختر المجموعة.", "error");
-  if (await run(api("PATCH", `/api/admin/lessons/${moveId}`, { collectionId: gid, unitId: $("moveUnit").value }), "تم نقل الدرس")) closeM("moveModal");
+  if (await run(() => api("PATCH", `/api/admin/lessons/${moveId}`, { collectionId: gid, unitId: $("moveUnit").value }), "تم نقل الدرس", $("moveSave"))) closeM("moveModal");
 }
 
 /* ---------- ربط الأحداث ---------- */
