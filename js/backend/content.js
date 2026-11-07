@@ -27,7 +27,7 @@ const lessonRow = (l) => ({
   url: lessonUrl(l),
   youtubeUrl: lessonUrl(l),
   stage: l.stage,
-  lessonGroupId: safeText(l.lessonGroupId) || null,
+  collectionId: safeText(l.collectionId) || null,
   unitId: safeText(l.unitId) || null,
   order: orderOf(l),
   createdAt: l.createdAt || null
@@ -41,12 +41,12 @@ route("GET", "/api/lessons", async () => {
 
   const [rows, groups] = await Promise.all([
     queryDocs("lessons", fs.where("stage", "==", stage)),
-    queryDocs("lessonGroups", fs.where("stage", "==", stage), fs.where("active", "==", true))
+    queryDocs("lessonCollections", fs.where("stage", "==", stage), fs.where("active", "==", true))
   ]);
   const liveGroups = new Set(groups.map((g) => g.id));
   const lessons = rows
     .filter((l) => l && l.id && lessonUrl(l) && isVideoLesson(l) && l.active !== false)
-    .filter((l) => !safeText(l.lessonGroupId) || liveGroups.has(safeText(l.lessonGroupId)))
+    .filter((l) => !safeText(l.collectionId) || liveGroups.has(safeText(l.collectionId)))
     .map(lessonRow);
   lessons.sort(byOrder);
   return ok(toPlain({ lessons }));
@@ -60,7 +60,7 @@ route("GET", "/api/lesson-catalog", async () => {
   if (!isValidStage(stage)) return ok({ groups: [] });
 
   const [groupRows, unitRows, lessonRows, progress] = await Promise.all([
-    queryDocs("lessonGroups", fs.where("stage", "==", stage), fs.where("active", "==", true)),
+    queryDocs("lessonCollections", fs.where("stage", "==", stage), fs.where("active", "==", true)),
     queryDocs("lessonUnits", fs.where("stage", "==", stage), fs.where("active", "==", true)),
     queryDocs("lessons", fs.where("stage", "==", stage)),
     queryDocs("lessonProgress", fs.where("studentId", "==", me.id))
@@ -96,9 +96,9 @@ route("GET", "/api/lesson-catalog", async () => {
   };
 
   const groups = groupRows.map((g) => {
-    const units = [...liveUnits.values()].filter((u) => safeText(u.lessonGroupId) === g.id);
-    const lessonsOf = visible.filter((l) => l.lessonGroupId === g.id &&
-      (!l.unitId || (liveUnits.has(l.unitId) && safeText(liveUnits.get(l.unitId).lessonGroupId) === g.id)));
+    const units = [...liveUnits.values()].filter((u) => safeText(u.collectionId) === g.id);
+    const lessonsOf = visible.filter((l) => l.collectionId === g.id &&
+      (!l.unitId || (liveUnits.has(l.unitId) && safeText(liveUnits.get(l.unitId).collectionId) === g.id)));
     return build(
       g.id, safeText(g.name), safeText(g.description), safeText(g.coverUrl),
       GROUP_COLORS.includes(safeText(g.color)) ? safeText(g.color) : "indigo",
@@ -107,13 +107,13 @@ route("GET", "/api/lesson-catalog", async () => {
   }).sort(byOrder);
 
   /* دروس قديمة بلا مجموعة (أو مجموعتها حُذفت) */
-  const loose = visible.filter((l) => !l.lessonGroupId || !liveGroupIds.has(l.lessonGroupId))
-    .filter((l) => !l.lessonGroupId); /* مجموعة موجودة وغير منشورة = مخفية */
+  const loose = visible.filter((l) => !l.collectionId || !liveGroupIds.has(l.collectionId))
+    .filter((l) => !l.collectionId); /* مجموعة موجودة وغير منشورة = مخفية */
   if (loose.length) {
     groups.push(build(GENERAL_GROUP_ID, "دروس عامة", "فيديوهات غير مصنفة في منهج محدد.", "", "slate", 100000,
       [], loose.map((l) => ({ ...l, unitId: null }))));
   }
-  return ok(toPlain({ groups: groups.filter((g) => g.lessonCount > 0 || g.id !== GENERAL_GROUP_ID) }));
+  return ok(toPlain({ groups: groups.filter((g) => g.lessonCount > 0) }));
 });
 
 route("POST", "/api/lessons/:id/open", async ({ params }) => {
@@ -130,14 +130,14 @@ route("POST", "/api/lessons/:id/open", async ({ params }) => {
       || !isLessonUrl("video", lessonUrl(lesson))) {
     bad("FORBIDDEN", "غير مسموح بهذا الدرس.");
   }
-  const gid = safeText(lesson.lessonGroupId);
+  const gid = safeText(lesson.collectionId);
   if (gid) {
-    const group = await getDocData("lessonGroups", gid);
+    const group = await getDocData("lessonCollections", gid);
     if (!group || group.active === false || safeText(group.stage) !== stage) bad("FORBIDDEN", "غير مسموح بهذا الدرس.");
     const uid = safeText(lesson.unitId);
     if (uid) {
       const unit = await getDocData("lessonUnits", uid);
-      if (!unit || unit.active === false || safeText(unit.lessonGroupId) !== gid) bad("FORBIDDEN", "غير مسموح بهذا الدرس.");
+      if (!unit || unit.active === false || safeText(unit.collectionId) !== gid) bad("FORBIDDEN", "غير مسموح بهذا الدرس.");
     }
   }
 
@@ -325,16 +325,10 @@ route("GET", "/api/lesson-groups", async ({ query }) => {
   const stage = safeText(query.stage);
   if (!isValidStage(stage)) return ok({ groups: [] });
 
-  const rows = await queryDocs("lessonGroups", fs.where("stage", "==", stage), fs.where("active", "==", true));
+  const rows = await queryDocs("lessonGroups", fs.where("stage", "==", stage));
   const groups = rows
     .filter((g) => g && g.id && g.active !== false)
-    .sort((a, b) => (orderOf(a) - orderOf(b)) || (tsToMs(a.createdAt) - tsToMs(b.createdAt)))
-    .map((g) => ({
-      id: g.id, name: safeText(g.name), stage: g.stage,
-      description: safeText(g.description), coverUrl: safeText(g.coverUrl),
-      color: GROUP_COLORS.includes(safeText(g.color)) ? safeText(g.color) : "indigo",
-      order: orderOf(g)
-    }));
+    .map((g) => ({ id: g.id, name: safeText(g.name), stage: g.stage }));
 
   return ok({ groups });
 });
